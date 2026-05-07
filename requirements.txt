@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────
+# VIRAL CUTTER - Dependências Python
+# ─────────────────────────────────────────────────
+
+# ── Transcrição (escolha UMA das opções abaixo) ──
+
+# Opção A: faster-whisper (RECOMENDADO - muito mais rápido)
+faster-whisper>=1.0.0
+
+# Opção B: openai-whisper (fallback oficial da OpenAI)
+# openai-whisper>=20231117
+# torch>=2.0.0          # necessário para openai-whisper
+
+# ── Dependências adicionais ────────────────────────
+
+# PySide6 (UI)
+PySide6>=6.6.0
+
+# Download de YouTube
+yt-dlp>=2024.3.10
+
+# NumPy (usado pelo Whisper)
+numpy>=1.24.0
+
+# Para tokenização e processamento de texto
+# (opcional, melhora análise do Python scorer)
+# nltk>=3.8.0
+
+# OpenCV para Face Tracking (Auto-Framing)
+opencv-python-headless>=4.8.0
+
+# ── Opcional: aceleração GPU ────────────────────────
+# Se tiver GPU NVIDIA, instale as versões CUDA:
+# pip install torch --index-url https://download.pytorch.org/whl/cu118
+# ou para faster-whisper com GPU: pip install faster-whisper[cuda]
+
+# ── Notas sobre dependências externas ──────────────
+# FFmpeg: sudo apt install ffmpeg   (Ubuntu/Debian)
+#         brew install ffmpeg       (macOS)
+#         winget install ffmpeg     (Windows)
+#
+# Ollama: curl -fsSL https://ollama.com/install.sh | sh
+#         ollama pull llama3
+#         ollama serve
