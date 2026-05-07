@@ -25,3 +25,10 @@ models/
 ffmpeg/
 ffprobe/
 .env
+client_secrets.json
+token.pickle
+batch_progress.json
+*.json
+!session_report.json
+!cuts_selected.json
+!cuts_raw.json

@@ -16,14 +16,14 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QFrame, QStackedWidget,
     QProgressBar, QPlainTextEdit, QScrollArea, QGridLayout,
     QComboBox, QCheckBox, QSpinBox, QLineEdit, QGroupBox,
-    QSizePolicy, QSpacerItem
+    QSizePolicy, QSpacerItem, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PySide6.QtCore import Qt, QSize, Signal, Slot, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon, QFont, QPixmap, QColor
 
 # Local imports
 from ui_styles import APPLE_MINIMAL_THEME
-from ui_worker import PipelineWorker, DownloadWorker
+from ui_worker import PipelineWorker, DownloadWorker, BatchPipelineWorker
 from cutter import EXPORT_PRESETS
 
 class ResultCard(QFrame):
@@ -87,6 +87,9 @@ class ViralCutterApp(QMainWindow):
         self.worker = None
         self.config = {
             "input": "",
+            "batch_list": None,
+            "upload_youtube": False,
+            "schedule_interval": 0,
             "output": os.path.normpath(os.path.join(os.path.expanduser("~"), "Videos", "ViralCutter")),
             "whisper_model": "medium",
             "whisper_backend": "auto",
@@ -106,7 +109,7 @@ class ViralCutterApp(QMainWindow):
             "skip_transcription": None,
             "skip_analysis": None,
             "ollama_timeout": 1200,
-            "analysis_engine": "ollama",
+            "analysis_engine": "heuristic",
             "log_level": "INFO",
             "subtitle_style": "high_impact",
             # Edição avançada
@@ -143,11 +146,13 @@ class ViralCutterApp(QMainWindow):
         # Nav Buttons
         self.nav_btns = []
         self.btn_dashboard = self._create_nav_btn("Dashboard", 0)
-        self.btn_settings = self._create_nav_btn("Configurações", 1)
-        self.btn_progress = self._create_nav_btn("Progresso", 2)
-        self.btn_results = self._create_nav_btn("Resultados", 3)
+        self.btn_lote = self._create_nav_btn("Gerenciar Lote", 1) # Nova aba
+        self.btn_settings = self._create_nav_btn("Configurações", 2)
+        self.btn_progress = self._create_nav_btn("Progresso", 3)
+        self.btn_results = self._create_nav_btn("Resultados", 4)
         
         sidebar_layout.addWidget(self.btn_dashboard)
+        sidebar_layout.addWidget(self.btn_lote)
         sidebar_layout.addWidget(self.btn_settings)
         sidebar_layout.addWidget(self.btn_progress)
         sidebar_layout.addWidget(self.btn_results)
@@ -168,6 +173,7 @@ class ViralCutterApp(QMainWindow):
         self.content_stack = QStackedWidget()
         
         self._setup_dashboard_page()
+        self._setup_batch_page() # Nova página
         self._setup_settings_page()
         self._setup_progress_page()
         self._setup_results_page()
@@ -209,10 +215,10 @@ class ViralCutterApp(QMainWindow):
         input_card.setObjectName("resultCard")
         input_layout = QVBoxLayout(input_card)
         
-        input_layout.addWidget(QLabel("Vídeo de Entrada"))
+        input_layout.addWidget(QLabel("Vídeo de Entrada ou Lista (.txt)"))
         file_row = QHBoxLayout()
         self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("Selecione um arquivo MP4...")
+        self.input_edit.setPlaceholderText("Selecione um arquivo MP4 ou list.txt...")
         self.input_edit.textChanged.connect(lambda t: self._update_config("input", t))
         
         browse_btn = QPushButton("Procurar")
@@ -299,6 +305,12 @@ class ViralCutterApp(QMainWindow):
         self.check_resume.toggled.connect(self.toggle_resume)
         quick_grid.addWidget(self.check_resume, 2, 0, 1, 2)
         
+        self.check_upload = QCheckBox("Upload automático para o YouTube")
+        self.check_upload.setToolTip("Somente ativado para processamento em lote (lista).")
+        self.check_upload.setChecked(self.config.get("upload_youtube", False))
+        self.check_upload.toggled.connect(lambda b: self._update_config("upload_youtube", b))
+        quick_grid.addWidget(self.check_upload, 3, 0, 1, 2)
+        
         layout.addLayout(quick_grid)
         layout.addStretch()
 
@@ -310,6 +322,206 @@ class ViralCutterApp(QMainWindow):
         layout.addWidget(self.start_btn)
 
         self.content_stack.addWidget(page)
+
+    def _setup_batch_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(20)
+
+        header = QLabel("Gerenciador de Lote")
+        header.setObjectName("headerLabel")
+        layout.addWidget(header)
+
+        # Actions Row
+        actions_row = QHBoxLayout()
+        add_btn = QPushButton("+ Adicionar URL")
+        add_btn.setObjectName("secondaryButton")
+        add_btn.clicked.connect(lambda: self.add_batch_row())
+        
+        import_btn = QPushButton("📂 Importar list.txt")
+        import_btn.setObjectName("secondaryButton")
+        import_btn.clicked.connect(self.import_batch_list)
+        
+        clear_btn = QPushButton("Limpar Tudo")
+        clear_btn.setObjectName("secondaryButton")
+        clear_btn.clicked.connect(lambda: self.batch_table.setRowCount(0))
+        
+        save_btn = QPushButton("💾 Salvar Lista")
+        save_btn.setObjectName("secondaryButton")
+        save_btn.clicked.connect(self.save_batch_list)
+        
+        actions_row.addWidget(add_btn)
+        actions_row.addWidget(import_btn)
+        actions_row.addWidget(save_btn)
+        actions_row.addStretch()
+        actions_row.addWidget(clear_btn)
+        layout.addLayout(actions_row)
+
+        # Batch Table
+        self.batch_table = QTableWidget(0, 4)
+        self.batch_table.setHorizontalHeaderLabels(["URL do Vídeo", "Formato (Preset)", "Título Base / Prefixo", "Ações"])
+        self.batch_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.batch_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.batch_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.batch_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.batch_table.setColumnWidth(3, 100)
+        self.batch_table.verticalHeader().setDefaultSectionSize(50) # Altura das linhas
+        self.batch_table.verticalHeader().setVisible(False)
+        self.batch_table.setShowGrid(False)
+        self.batch_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white; 
+                border-radius: 12px; 
+                border: 1px solid #E5E5EA;
+                gridline-color: transparent;
+            }
+            QHeaderView::section {
+                background-color: #F5F5F7;
+                padding: 10px;
+                border: none;
+                border-bottom: 1px solid #E5E5EA;
+                font-weight: bold;
+            }
+        """)
+        layout.addWidget(self.batch_table)
+
+        # Batch Controls
+        bottom_row = QHBoxLayout()
+        self.batch_upload_check = QCheckBox("Upload automático para YouTube")
+        self.batch_upload_check.setChecked(self.config.get("upload_youtube", False))
+        self.batch_upload_check.toggled.connect(lambda b: self._update_config("upload_youtube", b))
+        
+        schedule_layout = QHBoxLayout()
+        schedule_layout.addWidget(QLabel("Agendar (intervalo em horas):"))
+        self.schedule_spin = QSpinBox()
+        self.schedule_spin.setRange(0, 72)
+        self.schedule_spin.setSuffix(" h")
+        self.schedule_spin.setValue(self.config.get("schedule_interval", 0))
+        self.schedule_spin.valueChanged.connect(lambda v: self._update_config("schedule_interval", v))
+        schedule_layout.addWidget(self.schedule_spin)
+        
+        self.start_batch_btn = QPushButton("INICIAR PROCESSAMENTO EM LOTE")
+        self.start_batch_btn.setObjectName("primaryButton")
+        self.start_batch_btn.setMinimumHeight(50)
+        self.start_batch_btn.clicked.connect(self.start_batch_pipeline)
+        
+        bottom_row.addWidget(self.batch_upload_check)
+        bottom_row.addLayout(schedule_layout)
+        bottom_row.addStretch()
+        bottom_row.addWidget(self.start_batch_btn)
+        layout.addLayout(bottom_row)
+
+        self.content_stack.addWidget(page)
+
+    def add_batch_row(self, url="", preset="shorts", title=""):
+        row = self.batch_table.rowCount()
+        self.batch_table.insertRow(row)
+        
+        # URL
+        url_edit = QLineEdit(url)
+        url_edit.setPlaceholderText("https://youtube.com/...")
+        url_edit.setStyleSheet("border: 1px solid #E5E5EA; padding: 8px; border-radius: 6px; background: white;")
+        self.batch_table.setCellWidget(row, 0, url_edit)
+        
+        # Preset
+        preset_combo = QComboBox()
+        preset_combo.addItems(list(EXPORT_PRESETS.keys()))
+        preset_combo.setCurrentText(preset)
+        preset_combo.setStyleSheet("padding: 5px; min-width: 120px;")
+        self.batch_table.setCellWidget(row, 1, preset_combo)
+        
+        # Title
+        title_edit = QLineEdit(title)
+        title_edit.setPlaceholderText("Opcional: Prefixo do título")
+        title_edit.setStyleSheet("border: 1px solid #E5E5EA; padding: 8px; border-radius: 6px; background: white;")
+        self.batch_table.setCellWidget(row, 2, title_edit)
+        
+        # Remove Btn
+        remove_btn = QPushButton("Remover")
+        remove_btn.setCursor(Qt.PointingHandCursor)
+        remove_btn.setStyleSheet("""
+            QPushButton {
+                color: #FF3B30; 
+                font-weight: bold; 
+                border: none; 
+                background: transparent;
+            }
+            QPushButton:hover {
+                text-decoration: underline;
+            }
+        """)
+        remove_btn.clicked.connect(lambda: self.batch_table.removeRow(self.batch_table.currentRow() if self.batch_table.currentRow() >= 0 else row))
+        self.batch_table.setCellWidget(row, 3, remove_btn)
+
+    def save_batch_list(self):
+        """Salva o conteúdo da tabela de volta para um arquivo .txt"""
+        if self.batch_table.rowCount() == 0:
+            return
+            
+        path, _ = QFileDialog.getSaveFileName(self, "Salvar Lista", "minha_lista.txt", "Texto (*.txt)")
+        if path:
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write("# Lista gerada pelo Viral Cutter\n")
+                    for row in range(self.batch_table.rowCount()):
+                        url_widget = self.batch_table.cellWidget(row, 0)
+                        title_widget = self.batch_table.cellWidget(row, 2)
+                        
+                        if isinstance(url_widget, QLineEdit):
+                            url = url_widget.text().strip()
+                            prefix = title_widget.text().strip() if isinstance(title_widget, QLineEdit) else ""
+                            
+                            if url:
+                                line = url
+                                if prefix:
+                                    line += f" # {prefix}"
+                                f.write(line + "\n")
+                
+                logger.info(f"Lista salva com sucesso em: {path}")
+            except Exception as e:
+                logger.error(f"Erro ao salvar lista: {e}")
+
+    def import_batch_list(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Importar Lista", "", "Texto (*.txt)")
+        if path:
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    url = line.strip()
+                    if url and not url.startswith('#'):
+                        self.add_batch_row(url=url, preset=self.config["preset"])
+
+    def start_batch_pipeline(self):
+        jobs = []
+        for row in range(self.batch_table.rowCount()):
+            url = self.batch_table.cellWidget(row, 0).text().strip()
+            preset = self.batch_table.cellWidget(row, 1).currentText()
+            title = self.batch_table.cellWidget(row, 2).text().strip()
+            if url:
+                jobs.append({"url": url, "preset": preset, "title_prefix": title})
+        
+        if not jobs:
+            self.status_label.setText("Erro: Adicione pelo menos um vídeo ao lote.")
+            return
+
+        self.config["batch_jobs"] = jobs
+        
+        # UI Setup
+        self.log_view.clear()
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Iniciando lote...")
+        self.switch_page(3) # Progresso
+        
+        # Start Worker
+        self.worker = BatchPipelineWorker(self.config)
+        self.worker.log_signal.connect(self.append_log)
+        self.worker.progress_signal.connect(self.progress_bar.setValue)
+        self.worker.status_signal.connect(self.status_label.setText)
+        self.worker.finished_signal.connect(self.on_pipeline_finished)
+        
+        self.start_batch_btn.setEnabled(False)
+        self.worker.start()
+
 
     def _setup_settings_page(self):
         page = QWidget()
@@ -534,7 +746,7 @@ class ViralCutterApp(QMainWindow):
         self.config["soft_subtitles"] = (styles[index] == "soft")
 
     def browse_input(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Selecionar Vídeo", "", "Vídeos (*.mp4 *.mkv *.mov *.avi)")
+        path, _ = QFileDialog.getOpenFileName(self, "Selecionar Vídeo ou Lista", "", "Arquivos (*.mp4 *.mkv *.mov *.avi *.txt)")
         if path:
             self.input_edit.setText(path)
 
@@ -633,11 +845,17 @@ class ViralCutterApp(QMainWindow):
             self.switch_page(0)
             return
 
+        is_batch = self.config["input"].endswith(".txt")
+        if is_batch:
+            self.config["batch_list"] = self.config["input"]
+        else:
+            self.config["batch_list"] = None
+
         # Prepare UI
         self.log_view.clear()
         self.progress_bar.setValue(0)
         self.status_label.setText("Iniciando...")
-        self.switch_page(2) # Move to progress page
+        self.switch_page(3) # Move to progress page (was 2)
         
         # Clear results from previous run (itemAt can return spacers with no widget)
         for i in reversed(range(self.results_grid.count())):
@@ -648,7 +866,11 @@ class ViralCutterApp(QMainWindow):
                     widget.setParent(None)
 
         # Create and start worker
-        self.worker = PipelineWorker(self.config)
+        if is_batch:
+            self.worker = BatchPipelineWorker(self.config)
+        else:
+            self.worker = PipelineWorker(self.config)
+            
         self.worker.log_signal.connect(self.append_log)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
         self.worker.status_signal.connect(self.status_label.setText)
@@ -685,7 +907,7 @@ class ViralCutterApp(QMainWindow):
             self.start_btn.setEnabled(True)
         if success:
             self.status_label.setText("Concluído! Veja os resultados.")
-            self.switch_page(3) # Move to results page
+            self.switch_page(4) # Move to results page (was 3)
         else:
             self.status_label.setText("O processamento falhou. Verifique os logs.")
 

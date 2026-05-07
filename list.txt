@@ -1,0 +1,9 @@
+# Adicione um link por linha
+# Linhas começando com # são ignoradas
+# Exemplo:
+# https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+https://www.youtube.com/watch?v=aeBoDAwXmSw&pp=ygUTdmlkZW9zIGRlIGF0ZSA1IG1pbg%3D%3D
+https://www.youtube.com/watch?v=_qDg6gV9nwc&pp=ygUTdmlkZW9zIGRlIGF0ZSA1IG1pbg%3D%3D
+https://www.youtube.com/watch?v=h4NzUoUVi38&pp=ygUTdmlkZW9zIGRlIGF0ZSA1IG1pbg%3D%3D
+

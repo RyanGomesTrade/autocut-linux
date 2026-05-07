@@ -6,27 +6,11 @@ O **Viral Cutter Pro** é um ecossistema completo e automatizado para transforma
 
 ---
 
-## ✨ Novas Funcionalidades
-
-### 🖥️ Interface Gráfica Moderna (PySide6)
-Agora com uma interface desktop intuitiva e profissional:
-- **Dashboard Central**: Gerenciamento fácil de arquivos de entrada e saída.
-- **Importação YouTube**: Baixe vídeos diretamente pela URL com o motor `yt-dlp`.
-- **Galeria de Resultados**: Visualize e abra seus cortes gerados com um clique.
-- **Monitoramento em Tempo Real**: Barra de progresso e console de logs integrados.
-
-### 🧠 Motores de Análise Inteligente
-Escolha como o sistema deve encontrar seus melhores momentos:
-- **Motor Ollama (IA)**: Utiliza modelos como **Llama 3** ou **Mistral** para entender o contexto, emoção e potencial viral dos trechos.
-- **Motor Heurístico (Legacy)**: Desenvolvido para máxima performance em máquinas com hardware limitado (como o AMD FX-6300). Analisa densidade de fala e palavras-chave sem necessidade de IA pesada.
-
-### 🎞️ Edição e Legendas de Precisão
-- **Legendas de Alto Impacto (ASS)**: Estilo viral com destaque colorido na palavra atual e efeitos de zoom sincronizados.
-- **Sincronização Word-Level**: Precisão absoluta entre fala e texto.
-- **Trilha Sonora Inteligente**: Mixagem automática de música de fundo que combina com o tema do vídeo sugerido pela IA.
-- **Subtitles Burn-in**: Legendas embutidas no vídeo (hardcore) ou faixas separadas (soft).
-- **Ajuste de Silêncio**: O sistema detecta silêncios no início e fim dos cortes para evitar cortes bruscos.
-- **Presets de Redes Sociais**: Exportação automática em 9:16 (Vertical), 1:1 (Square) ou 16:9 (Landscape).
+### 🚀 Automação em Lote e YouTube (NOVO)
+- **Gerenciador de Lote Visual**: Importe listas de URLs e configure individualmente o formato (Shorts, TikTok, etc.) e o título de cada vídeo.
+- **Upload Automático para YouTube**: Integração direta com a YouTube Data API v3 para postagem sem intervenção manual.
+- **Agendamento Inteligente**: Defina um intervalo (ex: 4 em 4 horas) e o sistema agenda as postagens automaticamente no YouTube, garantindo presença nos horários de pico.
+- **Títulos Virais**: O sistema utiliza o "Hook" gerado pela IA como título do vídeo e adiciona hashtags estratégicas.
 
 ---
 
@@ -35,6 +19,8 @@ Escolha como o sistema deve encontrar seus melhores momentos:
 ```text
 AUTO_CUT_/
 ├── ui.py                 # Interface Gráfica Principal (PySide6)
+├── batch_processor.py    # Motor de processamento em lote e fila
+├── youtube_uploader.py   # Módulo de autenticação e upload para YouTube
 ├── main.py               # Orquestrador CLI e lógica central
 ├── analyzer.py           # Motores de análise (Ollama + Heurístico)
 ├── transcriber.py        # Extração de áudio + Faster-Whisper
@@ -50,30 +36,22 @@ AUTO_CUT_/
 ## 🛠️ Instalação Rápida
 
 ### 1. Requisitos de Sistema
-Certifique-se de ter o **FFmpeg** instalado no seu sistema:
-```bash
-# Windows (PowerShell admin)
-winget install ffmpeg
+Certifique-se de ter o **FFmpeg** instalado: `winget install ffmpeg`.
 
-# Linux/macOS
-sudo apt install ffmpeg  # Ubuntu
-brew install ffmpeg       # Mac
-```
+### 2. Configurar YouTube (Opcional para Postagem)
+Para usar o upload automático:
+1. Crie um projeto no [Google Cloud Console](https://console.cloud.google.com/).
+2. Ative a **YouTube Data API v3**.
+3. Crie uma credencial **OAuth Client ID (Desktop App)**.
+4. Baixe o JSON e salve como `client_secrets.json` na raiz do projeto.
 
-### 2. Configurar IA (Ollama)
-Para usar o motor de análise por IA, instale o [Ollama](https://ollama.com/) e baixe o modelo recomendado:
+### 3. Configurar IA (Ollama)
 ```bash
 ollama pull llama3
-ollama serve
 ```
 
-### 3. Instalar Dependências Python
+### 4. Instalar Dependências Python
 ```bash
-# Recomendado: use um ambiente virtual
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-
 pip install -r requirements.txt
 ```
 
@@ -81,17 +59,12 @@ pip install -r requirements.txt
 
 ## 🚀 Como Usar
 
-### Via Interface Gráfica (Recomendado)
-Para iniciar o Viral Cutter Pro com a nova interface:
-```bash
-python ui.py
-```
-
-### Via Linha de Comando (CLI)
-Para usuários avançados ou automação em servidores:
-```bash
-python main.py --input video.mp4 --output ./cortes --top-n 5 --preset tiktok
-```
+### Pipeline de Alta Escala (Lote)
+1. Execute `python ui.py`.
+2. Vá na aba **"Gerenciar Lote"**.
+3. Importe seu arquivo `list.txt` ou adicione URLs manualmente.
+4. Configure o **Intervalo de Agendamento** (ex: 4h para 6 vídeos por dia).
+5. Marque **"Upload automático para YouTube"** e clique em Iniciar.
 
 ---
 
@@ -100,18 +73,9 @@ python main.py --input video.mp4 --output ./cortes --top-n 5 --preset tiktok
 | Recurso | Hardware Recomendado | Motor Sugerido |
 | :--- | :--- | :--- |
 | **Transcrição** | GPU NVIDIA (CUDA) | `medium` ou `large-v3` |
-| **Transcrição** | CPU apenas | `small` ou `base` |
+| **Transcrição** | CPU apenas | `tiny` ou `base` |
 | **Análise** | 16GB+ RAM | `Ollama (Llama 3)` |
 | **Análise** | Hardware Antigo | `Motor Heurístico` |
-
----
-
-## 📤 Saída Gerada
-O sistema organiza tudo para você na pasta de saída:
-- `clips/*.mp4`: Seus vídeos prontos para postar.
-- `subtitles/*.srt`: Arquivos de legenda individuais.
-- `transcript.txt`: A transcrição completa do vídeo original.
-- `session_report.json`: Metadados e scores de todos os cortes.
 
 ---
 

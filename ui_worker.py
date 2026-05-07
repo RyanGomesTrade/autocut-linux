@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread, Signal, QObject
 # Import the main pipeline function
 from main import run_pipeline
 from downloader import download_youtube_video
+from batch_processor import BatchProcessor
 
 class SignallingHandler(logging.Handler):
     """
@@ -131,3 +132,76 @@ class DownloadWorker(QThread):
             self.finished_signal.emit(True, file_path)
         except Exception as e:
             self.finished_signal.emit(False, str(e))
+
+class BatchPipelineWorker(QThread):
+    """
+    Worker thread that executes the batch processing pipeline.
+    """
+    progress_signal = Signal(int)
+    status_signal = Signal(str)
+    log_signal = Signal(str)
+    finished_signal = Signal(bool, str)
+    results_ready_signal = Signal(list)
+
+    def __init__(self, config_dict):
+        super().__init__()
+        self.config_dict = config_dict
+        self._is_running = True
+
+    def run(self):
+        logger = logging.getLogger("viral_cutter")
+        logger.setLevel(logging.INFO)
+        
+        handler = SignallingHandler(self.log_signal)
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+        handler.setFormatter(formatter)
+        
+        if not any(isinstance(h, SignallingHandler) for h in logger.handlers):
+            logger.addHandler(handler)
+        
+        try:
+            self.status_signal.emit("Iniciando processamento em lote...")
+            self.log_signal.emit("--- Iniciando Batch ---")
+            self.progress_signal.emit(5)
+            
+            list_file = self.config_dict.get("batch_list")
+            jobs = self.config_dict.get("batch_jobs")
+            upload = self.config_dict.get("upload_youtube", False)
+            output_dir = self.config_dict.get("output", "batch_output")
+            
+            processor = BatchProcessor(
+                list_file=list_file or "list.txt",
+                output_base_dir=output_dir,
+                upload_to_youtube=upload
+            )
+            
+            # Repassar parâmetros customizados
+            custom_args = dict(self.config_dict)
+            if "batch_list" in custom_args: del custom_args["batch_list"]
+            if "batch_jobs" in custom_args: del custom_args["batch_jobs"]
+            if "input" in custom_args: del custom_args["input"]
+            
+            if jobs:
+                processor.process_jobs(jobs, custom_args)
+            else:
+                processor.process_all(custom_args)
+            
+            self.progress_signal.emit(100)
+            self.status_signal.emit("Lote concluído com sucesso!")
+            
+            # Pega o arquivo de progresso
+            report_path = processor.progress_file
+            self.results_ready_signal.emit([]) # Pode implementar depois para mostrar os cortes
+            self.finished_signal.emit(True, report_path)
+            
+        except Exception as e:
+            self.log_signal.emit(f"CRITICAL ERROR (BATCH): {str(e)}")
+            self.status_signal.emit(f"Erro fatal no lote: {str(e)}")
+            self.finished_signal.emit(False, "")
+        finally:
+            logger.removeHandler(handler)
+
+    def stop(self):
+        self._is_running = False
+        self.terminate()
+
