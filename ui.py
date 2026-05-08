@@ -11,6 +11,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+logger = logging.getLogger("viral_cutter.ui")
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QFileDialog, QFrame, QStackedWidget,

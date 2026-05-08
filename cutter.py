@@ -65,6 +65,22 @@ EXPORT_PRESETS = {
         "audio_bitrate": "192k",
         "crf": 23,
     },
+    "social_frame": {
+        "width": 1080,
+        "height": 1080,
+        "fps": 30,
+        "video_bitrate": "4M",
+        "audio_bitrate": "192k",
+        "crf": 22,
+    },
+    "shorts_blur": {
+        "width": 1080,
+        "height": 1920,
+        "fps": 30,
+        "video_bitrate": "4M",
+        "audio_bitrate": "192k",
+        "crf": 23,
+    },
 }
 
 
@@ -325,6 +341,28 @@ def cut_video_segment(
             
             vf_filters.append(crop_filter)
             vf_filters.append(f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black")
+    elif preset == "shorts_blur":
+        # Shorts com fundo desfocado (sem corte lateral)
+        target_w = effective_cfg["width"]
+        target_h = effective_cfg["height"]
+        vf_filters.append(
+            f"split=2[bg][fg];"
+            f"[bg]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},boxblur=25:5[blurred];"
+            f"[fg]scale={target_w}:-2[scaled];"
+            f"[blurred][scaled]overlay=(W-w)/2:(H-h)/2"
+        )
+    elif preset == "social_frame":
+        # Estilo Social Media: Vídeo centralizado com fundo desfocado
+        target_w = effective_cfg["width"]
+        target_h = effective_cfg["height"]
+        # Reduz o vídeo para 90% da largura para criar a 'moldura'
+        inner_w = int(target_w * 0.95)
+        vf_filters.append(
+            f"split=2[bg][fg];"
+            f"[bg]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h},boxblur=20:5[blurred];"
+            f"[fg]scale={inner_w}:-2[scaled];"
+            f"[blurred][scaled]overlay=(W-w)/2:(H-h)/2"
+        )
     else:
         # Para vídeos landscape
         target_w = effective_cfg["width"]

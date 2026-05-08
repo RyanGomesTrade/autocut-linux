@@ -126,7 +126,13 @@ def transcribe_with_faster_whisper(
 
     logger.info(f"Carregando modelo faster-whisper: {model_size} | device={device} | compute={compute_type}")
 
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    model = WhisperModel(
+        model_size, 
+        device=device, 
+        compute_type=compute_type,
+        cpu_threads=os.cpu_count() or 4,
+        num_workers=2
+    )
 
     logger.info("Iniciando transcrição...")
 
