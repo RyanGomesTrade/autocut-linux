@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 transcriber.py - Módulo de transcrição de áudio usando Whisper / Faster-Whisper
 
@@ -207,7 +208,19 @@ def transcribe_with_faster_whisper(
     if language:
         transcribe_kwargs["language"] = language
 
-    segments_gen, info = model.transcribe(audio_path, **transcribe_kwargs)
+    def load_audio_numpy(path: str):
+        import numpy as np
+        # FIX: Carrega áudio via FFmpeg puro para bypassar bug de encoding do PyAV
+        cmd = [
+            "ffmpeg", "-i", path,
+            "-f", "s16le", "-acodec", "pcm_s16le",
+            "-ar", "16000", "-ac", "1", "-"
+        ]
+        proc = subprocess.run(cmd, capture_output=True, check=True, env=_utf8_env())
+        return np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+
+    audio_data = load_audio_numpy(audio_path)
+    segments_gen, info = model.transcribe(audio_data, **transcribe_kwargs)
 
     detected_language = info.language
     audio_duration = info.duration
@@ -297,7 +310,18 @@ def transcribe_with_whisper(
     if language:
         options["language"] = language
 
-    result = model.transcribe(audio_path, **options)
+    def load_audio_numpy(path: str):
+        import numpy as np
+        cmd = [
+            "ffmpeg", "-i", path,
+            "-f", "s16le", "-acodec", "pcm_s16le",
+            "-ar", "16000", "-ac", "1", "-"
+        ]
+        proc = subprocess.run(cmd, capture_output=True, check=True, env=_utf8_env())
+        return np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+
+    audio_data = load_audio_numpy(audio_path)
+    result = model.transcribe(audio_data, **options)
 
     detected_language = result.get("language", "unknown")
     logger.info(f"Idioma detectado: {detected_language}")

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 downloader.py - YouTube video downloader usando yt-dlp
 

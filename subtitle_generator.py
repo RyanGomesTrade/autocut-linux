@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-subtitle_generator.py - Geração de legendas SRT sincronizadas com os cortes
+subtitle_generator.py - Geração de legendas SRT/ASS a partir de transcrição
 
 PATCH UTF-8:
   - Todos os open() para escrita de .srt e .ass agora têm encoding="utf-8" explícito.

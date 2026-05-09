@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 analyzer.py - Integração com Ollama para análise inteligente de cortes virais
 """

@@ -1,8 +1,5 @@
-"""
-main.py - Orquestrador principal do sistema Viral Cutter
-Uso: python main.py --input podcast.mp4 --output cortes/
-"""
-
+# -*- coding: utf-8 -*-
+import utf8_bootstrap
 import os
 import sys
 import json
@@ -10,7 +7,6 @@ import time
 import argparse
 import logging
 import tempfile
-import utf8_bootstrap
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -434,14 +430,20 @@ def run_pipeline(args: argparse.Namespace) -> int:
             return 1
     else:
         logger.info("\n⬛ ETAPA 2/6: Extraindo áudio...")
-        audio_path = os.path.join(str(temp_dir), "audio.wav")
-
         try:
+            # FIX: Usa um arquivo temporário no diretório padrão do sistema (/tmp)
+            # para evitar problemas de encoding no caminho do arquivo de áudio.
+            import tempfile
+            fd, audio_path = tempfile.mkstemp(suffix=".wav", prefix="viral_cutter_audio_")
+            os.close(fd)
+            
             extract_audio(args.input, audio_path)
             audio_size = os.path.getsize(audio_path)
             logger.info(f"  Áudio extraído: {format_size(audio_size)}")
         except Exception as e:
+            import traceback
             logger.error(f"Erro ao extrair áudio: {e}")
+            logger.error(traceback.format_exc())
             return 1
 
         # ─── Transcrição com Whisper ─────────────────────────────────────────────

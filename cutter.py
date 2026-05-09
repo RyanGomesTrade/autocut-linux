@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 cutter.py - Corte de vídeo e embutição de legendas usando FFmpeg
 

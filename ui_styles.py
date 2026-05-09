@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # ui_styles.py - Design system and QSS for Viral Cutter UI
 
 APPLE_MINIMAL_THEME = """

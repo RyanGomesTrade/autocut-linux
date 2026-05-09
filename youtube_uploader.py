@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # youtube_uploader.py
 import os
 import pickle

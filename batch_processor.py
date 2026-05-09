@@ -1,7 +1,7 @@
-# batch_processor.py
+# -*- coding: utf-8 -*-
+import utf8_bootstrap
 import os
 import json
-import utf8_bootstrap
 import logging
 import argparse
 from datetime import datetime, timedelta

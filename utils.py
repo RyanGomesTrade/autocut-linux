@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 utils.py - Funções utilitárias compartilhadas do sistema Viral Cutter
 

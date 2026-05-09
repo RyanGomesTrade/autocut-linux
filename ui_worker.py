@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # ui_worker.py - Worker thread for Viral Cutter pipeline
 
 import os

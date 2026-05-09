@@ -1,5 +1,5 @@
-# ui.py - Modern GUI for Viral Cutter using PySide6
-
+# -*- coding: utf-8 -*-
+import utf8_bootstrap
 import os
 import sys
 
@@ -9,7 +9,15 @@ os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 import json
 import logging
 import subprocess
+import traceback
 from pathlib import Path
+
+# Hook global para capturar erros não tratados e mostrar no log/console
+def global_exception_handler(exctype, value, tb):
+    logger.error("".join(traceback.format_exception(exctype, value, tb)))
+    sys.__excepthook__(exctype, value, tb)
+
+sys.excepthook = global_exception_handler
 
 logger = logging.getLogger("viral_cutter.ui")
 
