@@ -10,6 +10,7 @@ import time
 import argparse
 import logging
 import tempfile
+import utf8_bootstrap
 from pathlib import Path
 from datetime import datetime
 from typing import Optional

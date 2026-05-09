@@ -1,6 +1,7 @@
 # batch_processor.py
 import os
 import json
+import utf8_bootstrap
 import logging
 import argparse
 from datetime import datetime, timedelta
