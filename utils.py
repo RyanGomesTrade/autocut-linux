@@ -120,13 +120,14 @@ def seconds_to_hms(seconds: float) -> str:
 def sanitize_filename(name: str, max_length: int = 60) -> str:
     """
     Remove caracteres inválidos de um nome de arquivo.
-
-    NOTA: a função original já estava correta. Mantida sem alteração funcional,
-    mas agora aceita explicitamente str unicode.
     """
-    # Garante que é string unicode (não bytes)
     if isinstance(name, bytes):
         name = name.decode("utf-8", errors="replace")
+    
+    # Substitui apóstrofos e aspas por nada para evitar problemas com FFmpeg filters
+    name = name.replace("'", "").replace('"', "")
+    
+    # Remove outros caracteres problemáticos
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     name = re.sub(r"\s+", "_", name.strip())
     name = re.sub(r"[^\w\-_.]", "", name)

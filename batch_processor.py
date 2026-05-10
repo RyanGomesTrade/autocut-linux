@@ -4,7 +4,7 @@ import os
 import json
 import logging
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from main import run_pipeline, DEFAULT_CONFIG
 from downloader import download_youtube_video
@@ -73,6 +73,13 @@ class BatchProcessor:
         total = len(jobs)
         logger.info(f"Iniciando processamento de fila customizada com {total} vídeos.")
 
+        # Inicializa o tempo de agendamento apenas no início do lote
+        self.schedule_interval = custom_args.get("schedule_interval", 0) if custom_args else 0
+        if self.schedule_interval > 0:
+            # YouTube API exige horário em UTC
+            self.last_scheduled_time = datetime.now(timezone.utc)
+            logger.info(f"Agendamento ativado (UTC): intervalo de {self.schedule_interval}h entre vídeos.")
+
         for i, job in enumerate(jobs, 1):
             url = job.get("url")
             if not url: continue
@@ -125,8 +132,6 @@ class BatchProcessor:
 
         # 4. Upload to YouTube
         if self.upload_to_youtube and self.uploader:
-            # Pega intervalo de agendamento das configurações customizadas
-            self.schedule_interval = custom_args.get("schedule_interval", 0) if custom_args else 0
             self.upload_results(current_output, video_name, custom_args)
 
     def upload_results(self, output_dir, original_title, custom_args=None):
@@ -166,14 +171,10 @@ class BatchProcessor:
                 # Lógica de Agendamento
                 publish_at = None
                 if self.schedule_interval > 0:
-                    if not self.last_scheduled_time:
-                        # Primeiro vídeo do lote começa agora + intervalo
-                        self.last_scheduled_time = datetime.now() + timedelta(hours=self.schedule_interval)
-                    else:
-                        self.last_scheduled_time += timedelta(hours=self.schedule_interval)
-                    
+                    # Incrementa o tempo ANTES de cada vídeo para garantir que o primeiro também seja agendado no futuro
+                    self.last_scheduled_time += timedelta(hours=self.schedule_interval)
                     publish_at = self.last_scheduled_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    logger.info(f"Agendando vídeo para: {publish_at}")
+                    logger.info(f"Agendando vídeo '{title}' para: {publish_at}")
 
                 try:
                     video_id = self.uploader.upload_video(
@@ -190,6 +191,14 @@ class BatchProcessor:
         # Atualiza o relatório com os IDs do YouTube
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
+
+    def process_all(self, custom_args=None):
+        """
+        Processa todas as URLs do arquivo list.txt
+        """
+        urls = self.get_urls()
+        jobs = [{"url": url} for url in urls]
+        self.process_jobs(jobs, custom_args)
 
 def main():
     parser = argparse.ArgumentParser(description="Batch Processor para Viral Cutter")

@@ -27,6 +27,7 @@ from analyzer import (
 )
 from subtitle_generator import generate_srt_for_cut
 from cutter import process_cut, detect_silence, adjust_cut_to_avoid_silence, EXPORT_PRESETS
+from watermark import apply_watermark_to_result
 
 
 # ─── Configurações padrão ─────────────────────────────────────────────────────
@@ -64,6 +65,15 @@ DEFAULT_CONFIG = {
     # Diretórios
     "keep_temp": False,                  # manter arquivos temporários
     "log_level": "INFO",
+
+    # Marca d'água
+    "watermark_image":    None,          # caminho para PNG/WebP
+    "watermark_text":     None,          # texto (ex: @meucanal)
+    "watermark_position": "bottom_right",
+    "watermark_opacity":  0.8,
+    "watermark_scale":    1.0,
+    "watermark_font_size": 40,
+    "watermark_font_color": "white",
 }
 
 
@@ -247,6 +257,49 @@ Presets de exportação disponíveis:
         "--skip-analysis",
         metavar="CUTS_JSON",
         help="Pula a análise usando arquivo JSON de cortes existente"
+    )
+
+    # Marca d'água
+    wm_group = parser.add_argument_group("Marca d'água")
+    wm_group.add_argument(
+        "--watermark-image",
+        metavar="IMAGE_PATH",
+        help="Caminho para PNG/WebP da marca d'água (com transparência)"
+    )
+    wm_group.add_argument(
+        "--watermark-text",
+        metavar="TEXT",
+        help="Texto da marca d'água (ex: @meucanal)"
+    )
+    wm_group.add_argument(
+        "--watermark-position",
+        default="bottom_right",
+        choices=["top_left", "top_right", "bottom_left", "bottom_right",
+                 "center", "top_center", "bottom_center"],
+        help="Posição da marca d'água (padrão: bottom_right)"
+    )
+    wm_group.add_argument(
+        "--watermark-opacity",
+        type=float,
+        default=0.8,
+        help="Opacidade da marca d'água 0.0–1.0 (padrão: 0.8)"
+    )
+    wm_group.add_argument(
+        "--watermark-scale",
+        type=float,
+        default=1.0,
+        help="Escala da imagem de marca d'água (padrão: 1.0)"
+    )
+    wm_group.add_argument(
+        "--watermark-font-size",
+        type=int,
+        default=40,
+        help="Tamanho da fonte do texto da marca d'água (padrão: 40)"
+    )
+    wm_group.add_argument(
+        "--watermark-font-color",
+        default="white",
+        help="Cor do texto da marca d'água (padrão: white)"
     )
 
     return parser.parse_args()
@@ -652,6 +705,21 @@ def run_pipeline(args: argparse.Namespace) -> int:
             auto_frame=getattr(args, 'auto_frame', False),
         )
         processing_results.append(result)
+
+        # ── Marca d'água (opcional) ───────────────────────────────────────────
+        wm_image = getattr(args, 'watermark_image', None)
+        wm_text  = getattr(args, 'watermark_text', None)
+        if wm_image or wm_text:
+            watermark_cfg = {
+                "image_path":  wm_image,
+                "text":        wm_text,
+                "position":    getattr(args, 'watermark_position',   'bottom_right'),
+                "opacity":     getattr(args, 'watermark_opacity',    0.8),
+                "scale":       getattr(args, 'watermark_scale',      1.0),
+                "font_size":   getattr(args, 'watermark_font_size',  40),
+                "font_color":  getattr(args, 'watermark_font_color', 'white'),
+            }
+            processing_results[-1] = apply_watermark_to_result(result, watermark_cfg)
 
     # ─── Relatório final ──────────────────────────────────────────────────────
     elapsed = time.time() - start_time

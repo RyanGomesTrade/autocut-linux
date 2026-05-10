@@ -129,6 +129,14 @@ class ViralCutterApp(QMainWindow):
             "fade_duration": 0.5,
             "progress_bar": False,
             "auto_frame": False,
+            # Marca d'água
+            "watermark_image":     None,
+            "watermark_text":      None,
+            "watermark_position":  "bottom_right",
+            "watermark_opacity":   0.8,
+            "watermark_scale":     1.0,
+            "watermark_font_size": 40,
+            "watermark_font_color": "white",
         }
 
         self.init_ui()
@@ -684,7 +692,104 @@ class ViralCutterApp(QMainWindow):
         s_layout.addWidget(self.check_autoframe, 4, 0, 1, 2)
 
         layout.addWidget(shorts_group)
-        
+
+        # 6. Marca d'água
+        wm_group = QGroupBox("💧 Marca d'água")
+        wm_layout = QGridLayout(wm_group)
+
+        # Imagem
+        wm_layout.addWidget(QLabel("Imagem (PNG/WebP):"), 0, 0)
+        wm_img_row = QHBoxLayout()
+        self.wm_image_edit = QLineEdit()
+        self.wm_image_edit.setPlaceholderText("Caminho para logo com transparência...")
+        self.wm_image_edit.setText(self.config.get("watermark_image") or "")
+        self.wm_image_edit.textChanged.connect(
+            lambda t: self._update_config("watermark_image", t if t.strip() else None)
+        )
+        wm_browse_btn = QPushButton("Abrir")
+        wm_browse_btn.setObjectName("secondaryButton")
+        wm_browse_btn.clicked.connect(self.browse_watermark_image)
+        wm_img_row.addWidget(self.wm_image_edit)
+        wm_img_row.addWidget(wm_browse_btn)
+        wm_layout.addLayout(wm_img_row, 0, 1)
+
+        # Texto
+        wm_layout.addWidget(QLabel("Texto:"), 1, 0)
+        self.wm_text_edit = QLineEdit()
+        self.wm_text_edit.setPlaceholderText("Ex: @meucanal")
+        self.wm_text_edit.setText(self.config.get("watermark_text") or "")
+        self.wm_text_edit.textChanged.connect(
+            lambda t: self._update_config("watermark_text", t if t.strip() else None)
+        )
+        wm_layout.addWidget(self.wm_text_edit, 1, 1)
+
+        # Posição
+        wm_layout.addWidget(QLabel("Posição:"), 2, 0)
+        self.combo_wm_pos = QComboBox()
+        wm_positions = ["bottom_right", "bottom_left", "top_right", "top_left",
+                        "bottom_center", "top_center", "center"]
+        wm_pos_labels = ["Inferior Direito", "Inferior Esquerdo", "Superior Direito",
+                         "Superior Esquerdo", "Inferior Centro", "Superior Centro", "Centro"]
+        for pos, lbl in zip(wm_positions, wm_pos_labels):
+            self.combo_wm_pos.addItem(lbl, pos)
+        cur_pos = self.config.get("watermark_position", "bottom_right")
+        idx = wm_positions.index(cur_pos) if cur_pos in wm_positions else 0
+        self.combo_wm_pos.setCurrentIndex(idx)
+        self.combo_wm_pos.currentIndexChanged.connect(
+            lambda i: self._update_config("watermark_position", self.combo_wm_pos.itemData(i))
+        )
+        wm_layout.addWidget(self.combo_wm_pos, 2, 1)
+
+        # Opacidade
+        wm_layout.addWidget(QLabel("Opacidade (%):"), 3, 0)
+        self.spin_wm_opacity = QSpinBox()
+        self.spin_wm_opacity.setRange(10, 100)
+        self.spin_wm_opacity.setSuffix("%")
+        self.spin_wm_opacity.setValue(int(self.config.get("watermark_opacity", 0.8) * 100))
+        self.spin_wm_opacity.valueChanged.connect(
+            lambda v: self._update_config("watermark_opacity", v / 100.0)
+        )
+        wm_layout.addWidget(self.spin_wm_opacity, 3, 1)
+
+        # Escala da imagem
+        wm_layout.addWidget(QLabel("Escala da Imagem (%):"), 4, 0)
+        self.spin_wm_scale = QSpinBox()
+        self.spin_wm_scale.setRange(10, 300)
+        self.spin_wm_scale.setSuffix("%")
+        self.spin_wm_scale.setValue(int(self.config.get("watermark_scale", 1.0) * 100))
+        self.spin_wm_scale.valueChanged.connect(
+            lambda v: self._update_config("watermark_scale", v / 100.0)
+        )
+        wm_layout.addWidget(self.spin_wm_scale, 4, 1)
+
+        # Tamanho da fonte
+        wm_layout.addWidget(QLabel("Tamanho da Fonte:"), 5, 0)
+        self.spin_wm_font = QSpinBox()
+        self.spin_wm_font.setRange(10, 200)
+        self.spin_wm_font.setValue(self.config.get("watermark_font_size", 40))
+        self.spin_wm_font.valueChanged.connect(
+            lambda v: self._update_config("watermark_font_size", v)
+        )
+        wm_layout.addWidget(self.spin_wm_font, 5, 1)
+
+        # Cor do texto
+        wm_layout.addWidget(QLabel("Cor do Texto:"), 6, 0)
+        self.combo_wm_color = QComboBox()
+        wm_colors = [("Branco", "white"), ("Preto", "black"),
+                     ("Amarelo", "yellow"), ("Vermelho", "red"), ("Ciano", "cyan")]
+        for lbl, val in wm_colors:
+            self.combo_wm_color.addItem(lbl, val)
+        cur_color = self.config.get("watermark_font_color", "white")
+        color_vals = [v for _, v in wm_colors]
+        cidx = color_vals.index(cur_color) if cur_color in color_vals else 0
+        self.combo_wm_color.setCurrentIndex(cidx)
+        self.combo_wm_color.currentIndexChanged.connect(
+            lambda i: self._update_config("watermark_font_color", self.combo_wm_color.itemData(i))
+        )
+        wm_layout.addWidget(self.combo_wm_color, 6, 1)
+
+        layout.addWidget(wm_group)
+
         layout.addStretch()
         
         scroll.setWidget(container)
@@ -790,6 +895,14 @@ class ViralCutterApp(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Músicas", self.config.get("bg_music", ""))
         if path:
             self.music_edit.setText(path)
+
+    def browse_watermark_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Selecionar Imagem da Marca d'água", "",
+            "Imagens (*.png *.webp *.jpg *.jpeg)"
+        )
+        if path:
+            self.wm_image_edit.setText(path)
 
     def start_youtube_download(self):
         url = self.yt_url_edit.text().strip()

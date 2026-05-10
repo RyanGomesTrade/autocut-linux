@@ -106,32 +106,27 @@ def _escape_srt_path_for_ffmpeg(srt_path: str) -> str:
     """
     Escapa o caminho do arquivo SRT para uso no filtro subtitles= do FFmpeg.
 
-    O filtro subtitles= tem regras de escape específicas:
-      - No Linux: barras normais, dois pontos escapados como \\:
-      - No Windows: barras invertidas viram barras normais, depois mesmo escape.
-      - Espaços: envolvidos em aspas simples OU escapados como \\  (optamos por aspas)
-      - Acentos/UTF-8: o FFmpeg os aceita nativamente desde que o locale esteja
-        em UTF-8. Com LANG=pt_BR.UTF-8 no env, funciona corretamente.
-
-    NOTA: O escape anterior estava incompleto — não escapava '[' e ']' que o
-    libavfilter interpreta como delimitadores de opção. Corrigido abaixo.
+    O filtro subtitles= tem regras de escape específicas e complexas:
+      1. Caracteres do libavfilter: [ ] : , ;
+      2. Aspas simples e backslashes para o parser de strings do FFmpeg.
+      3. O apóstrofo (') é especialmente problemático em filtros.
     """
     srt_path = str(srt_path)
 
-    # Normaliza separadores de caminho para forward slash (Windows compat)
+    # 1. Normaliza separadores para forward slash (Windows compat)
+    # No Linux não faz nada, no Windows evita problemas com \
     srt_path = srt_path.replace("\\", "/")
 
-    # Escapa caracteres especiais do libavfilter
-    # Ordem importa: escapa \ primeiro (se houver), depois : e [ ]
+    # 2. Escape para o libavfilter (subtitles=path)
+    # A ordem é crítica. Primeiro escapamos o caractere de escape do filtro (\)
+    srt_path = srt_path.replace("'", "'\\\\\\''") # Escape triplo para apóstrofo dentro de aspas
     srt_path = srt_path.replace(":", "\\:")
     srt_path = srt_path.replace("[", "\\[")
     srt_path = srt_path.replace("]", "\\]")
 
-    # Se o path tem espaços, envolve em aspas simples
-    if " " in srt_path:
-        srt_path = f"'{srt_path}'"
-
-    return srt_path
+    # 3. Envolve em aspas simples para lidar com espaços e outros caracteres
+    # O FFmpeg exige aspas simples em volta do path se houver caracteres especiais
+    return f"'{srt_path}'"
 
 
 # ─── Detecção de silêncio ────────────────────────────────────────────────────

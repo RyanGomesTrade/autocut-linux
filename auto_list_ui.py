@@ -7,13 +7,14 @@ import logging
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QSpinBox, QFrame, QProgressBar, QMessageBox
+    QSpinBox, QFrame, QProgressBar, QMessageBox, QComboBox, QButtonGroup,
+    QRadioButton, QGroupBox,
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QColor
 
 # Local imports
-from auto_list import YouTubeSearcher, save_to_list
+from auto_list import YouTubeSearcher, save_to_list, REGIONS
 from ui_styles import APPLE_MINIMAL_THEME
 
 logger = logging.getLogger("auto_list_ui")
@@ -39,19 +40,24 @@ class AutoListUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YouTube Auto List - Viral Cutter")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(860, 680)
         
         self.searcher = None
         self.worker = None
+        self._current_region = "BR"  # região ativa
         
         self.init_ui()
         self.setStyleSheet(APPLE_MINIMAL_THEME)
-        
-        # Tentar inicializar o buscador em background
+        self._init_searcher()
+
+    def _init_searcher(self, region: str = "BR"):
+        """Cria (ou recria) o YouTubeSearcher com a região selecionada."""
         try:
-            self.searcher = YouTubeSearcher()
+            self.searcher = YouTubeSearcher(region=region)
+            self._current_region = region
         except Exception as e:
             logger.error(f"Erro ao autenticar: {e}")
+            self.searcher = None
 
     def init_ui(self):
         central_widget = QWidget()
@@ -61,18 +67,43 @@ class AutoListUI(QMainWindow):
         layout.setContentsMargins(40, 40, 40, 40)
         layout.setSpacing(20)
         
-        # Header
+        # ── Header ────────────────────────────────────────────────────────────
         header = QLabel("Explorar Nichos Lucrativos")
         header.setObjectName("headerLabel")
         layout.addWidget(header)
         
-        desc = QLabel("Selecione um nicho baseado no potencial de lucro e viralização para buscar vídeos em alta.")
+        desc = QLabel("Selecione o canal de destino, o nicho e a quantidade de vídeos para buscar.")
         desc.setStyleSheet("color: #86868B; font-size: 14px;")
         layout.addWidget(desc)
-        
-        # Table of Niches
+
+        # ── Seletor de região ─────────────────────────────────────────────────
+        region_card = QFrame()
+        region_card.setObjectName("resultCard")
+        region_layout = QHBoxLayout(region_card)
+        region_layout.setContentsMargins(16, 12, 16, 12)
+
+        region_layout.addWidget(QLabel("Canal de destino:"))
+
+        self.btn_br = QRadioButton("🇧🇷  Brasil (Português)")
+        self.btn_us = QRadioButton("🇺🇸  EUA (English)")
+        self.btn_br.setChecked(True)
+
+        self.region_group = QButtonGroup(self)
+        self.region_group.addButton(self.btn_br, 0)
+        self.region_group.addButton(self.btn_us, 1)
+        self.region_group.buttonClicked.connect(self._on_region_changed)
+
+        region_layout.addWidget(self.btn_br)
+        region_layout.addSpacing(20)
+        region_layout.addWidget(self.btn_us)
+        region_layout.addStretch()
+
+        layout.addWidget(region_card)
+
+        # ── Tabela de nichos ──────────────────────────────────────────────────
         self.table = QTableWidget(len(YouTubeSearcher.CATEGORIES), 4)
         self.table.setHorizontalHeaderLabels(["ID", "Nicho", "Potencial de Pagamento", "Facilidade de Viralizar"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
@@ -93,25 +124,15 @@ class AutoListUI(QMainWindow):
                 border: none;
                 font-weight: bold;
             }
+            QTableWidget::item:selected {
+                background-color: #1D1D1F;
+                color: white;
+            }
         """)
-        
-        # Popular a tabela
-        for i, (key, val) in enumerate(YouTubeSearcher.CATEGORIES.items()):
-            self.table.setItem(i, 0, QTableWidgetItem(key))
-            self.table.setItem(i, 1, QTableWidgetItem(val['name']))
-            
-            pay_item = QTableWidgetItem(val['pay'])
-            if "Muito alto" in val['pay']: pay_item.setForeground(QColor("#008000"))
-            self.table.setItem(i, 2, pay_item)
-            
-            viral_item = QTableWidgetItem(val['viral'])
-            if "Muito alto" in val['viral'] or "Extremamente" in val['viral']: 
-                viral_item.setForeground(QColor("#007AFF"))
-            self.table.setItem(i, 3, viral_item)
-            
+        self._populate_table()
         layout.addWidget(self.table)
         
-        # Controls Row
+        # ── Controles ─────────────────────────────────────────────────────────
         controls_card = QFrame()
         controls_card.setObjectName("resultCard")
         controls_layout = QHBoxLayout(controls_card)
@@ -131,7 +152,7 @@ class AutoListUI(QMainWindow):
         
         layout.addWidget(controls_card)
         
-        # Progress
+        # ── Status ────────────────────────────────────────────────────────────
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
@@ -139,6 +160,40 @@ class AutoListUI(QMainWindow):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #86868B; font-size: 12px;")
         layout.addWidget(self.status_label)
+
+    def _populate_table(self):
+        """Preenche a tabela de nichos."""
+        self.table.setRowCount(0)
+        for i, (key, val) in enumerate(YouTubeSearcher.CATEGORIES.items()):
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(key))
+            self.table.setItem(i, 1, QTableWidgetItem(val['name']))
+            
+            pay_item = QTableWidgetItem(val['pay'])
+            if "Very high" in val['pay'] or "Muito alto" in val['pay']:
+                pay_item.setForeground(QColor("#008000"))
+            elif "High" in val['pay'] or "Alto" in val['pay']:
+                pay_item.setForeground(QColor("#34C759"))
+            self.table.setItem(i, 2, pay_item)
+            
+            viral_item = QTableWidgetItem(val['viral'])
+            if "Extremely" in val['viral'] or "Extremamente" in val['viral']:
+                viral_item.setForeground(QColor("#FF3B30"))
+            elif "Very high" in val['viral'] or "Muito alto" in val['viral']:
+                viral_item.setForeground(QColor("#007AFF"))
+            self.table.setItem(i, 3, viral_item)
+
+    def _on_region_changed(self, btn):
+        """Chamado quando o usuário troca de região."""
+        new_region = "US" if self.region_group.id(btn) == 1 else "BR"
+        if new_region == self._current_region:
+            return
+        self.status_label.setText(f"Trocando para região {REGIONS[new_region]['label']}...")
+        self._init_searcher(new_region)
+        if self.searcher:
+            self.status_label.setText(f"✓ Região alterada: {REGIONS[new_region]['label']}")
+        else:
+            self.status_label.setText("⚠ Erro ao trocar de região. Verifique a autenticação.")
 
     def start_search(self):
         selected = self.table.selectedItems()
@@ -151,15 +206,18 @@ class AutoListUI(QMainWindow):
         
         if not self.searcher:
             try:
-                self.searcher = YouTubeSearcher()
+                self._init_searcher(self._current_region)
             except Exception as e:
                 QMessageBox.critical(self, "Erro de Autenticação", f"Não foi possível conectar ao YouTube:\n{e}")
                 return
 
+        region_label = REGIONS[self._current_region]['label']
+        cat_name = YouTubeSearcher.CATEGORIES[category_key]['name']
+
         self.search_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0) # Marquee
-        self.status_label.setText(f"Buscando vídeos para '{YouTubeSearcher.CATEGORIES[category_key]['name']}'...")
+        self.progress_bar.setRange(0, 0)
+        self.status_label.setText(f"Buscando '{cat_name}' em {region_label}...")
         
         self.worker = SearchWorker(self.searcher, category_key, count)
         self.worker.finished.connect(self.on_search_finished)
@@ -174,21 +232,26 @@ class AutoListUI(QMainWindow):
             self.status_label.setText("Nenhum vídeo encontrado.")
             return
 
+        # Mostra preview dos títulos encontrados
+        preview = "\n".join(
+            f"• [{v.get('channel','')}] {v['title'][:60]}{'…' if len(v['title'])>60 else ''}"
+            for v in videos
+        )
         confirm = QMessageBox.question(
-            self, 
-            "Confirmar", 
-            f"Encontrados {len(videos)} vídeos. Deseja salvá-los em list.txt?",
-            QMessageBox.Yes | QMessageBox.No
+            self,
+            "Confirmar",
+            f"Encontrados {len(videos)} vídeos:\n\n{preview}\n\nDeseja salvá-los em list.txt?",
+            QMessageBox.Yes | QMessageBox.No,
         )
         
         if confirm == QMessageBox.Yes:
             added_count = save_to_list(videos)
             if added_count > 0:
-                self.status_label.setText(f"Sucesso! {added_count} novos vídeos adicionados ao list.txt.")
+                self.status_label.setText(f"✓ {added_count} novos vídeos adicionados ao list.txt.")
                 QMessageBox.information(self, "Sucesso", f"{added_count} novos vídeos foram adicionados à sua lista.")
             else:
-                self.status_label.setText("Nenhum vídeo novo adicionado (já existiam na lista).")
-                QMessageBox.warning(self, "Aviso", "Todos os vídeos encontrados já estavam na sua lista. Nada foi adicionado.")
+                self.status_label.setText("Nenhum vídeo novo (todos já estavam na lista).")
+                QMessageBox.warning(self, "Aviso", "Todos os vídeos encontrados já estavam na sua lista.")
         else:
             self.status_label.setText("Operação cancelada.")
 

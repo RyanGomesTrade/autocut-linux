@@ -14,6 +14,21 @@ from typing import List, Dict
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger("auto_list")
 
+# ─── Configuração por região ──────────────────────────────────────────────────
+
+REGIONS = {
+    "BR": {
+        "label":    "🇧🇷  Brasil (Português)",
+        "region":   "BR",
+        "language": "pt",
+    },
+    "US": {
+        "label":    "🇺🇸  United States (English)",
+        "region":   "US",
+        "language": "en",
+    },
+}
+
 class YouTubeSearcher:
     """
     Handles authentication and searching for videos on YouTube via Data API v3.
@@ -24,23 +39,91 @@ class YouTubeSearcher:
         'https://www.googleapis.com/auth/youtube.upload'
     ]
     
-    # Nichos atualizados com base na remuneração e viralização
+    # Categorias com queries em PT e EN
     CATEGORIES = {
-        "1": {"name": "Finanças", "query": "investimentos bolsa de valores finanças pessoais", "pay": "Muito alto", "viral": "Médio"},
-        "2": {"name": "IA / Tecnologia", "query": "inteligência artificial tecnologia novidades chatgpt", "pay": "Muito alto", "viral": "Alto"},
-        "3": {"name": "Negócios", "query": "empreendedorismo negócios startups marketing digital", "pay": "Alto", "viral": "Médio"},
-        "4": {"name": "Fitness", "query": "fitness treino musculação dieta saúde", "pay": "Médio/alto", "viral": "Alto"},
-        "5": {"name": "Política", "query": "política notícias brasil debate", "pay": "Médio", "viral": "Alto"},
-        "6": {"name": "Games", "query": "games gameplay novidades jogos ps5 xbox", "pay": "Baixo", "viral": "Muito alto"},
-        "7": {"name": "Curiosidades", "query": "curiosidades fatos desconhecidos documentário", "pay": "Baixo", "viral": "Muito alto"},
-        "8": {"name": "Humor", "query": "humor comédia engraçado memes", "pay": "Baixo", "viral": "Extremamente alto"},
-        "9": {"name": "Luxo", "query": "luxo mansões carros esportivos lifestyle rico", "pay": "Alto", "viral": "Médio"},
-        "10": {"name": "Motivacional", "query": "motivacional superação frases motivação desenvolvimento pessoal", "pay": "Médio", "viral": "Alto"},
+        "1":  {
+            "name": "Finance",
+            "query_pt": "investimentos bolsa de valores finanças pessoais",
+            "query_en": "investing stock market personal finance wealth",
+            "pay": "Very high", "viral": "Medium",
+        },
+        "2":  {
+            "name": "AI / Tech",
+            "query_pt": "inteligência artificial tecnologia novidades chatgpt",
+            "query_en": "artificial intelligence technology chatgpt future tech",
+            "pay": "Very high", "viral": "High",
+        },
+        "3":  {
+            "name": "Business",
+            "query_pt": "empreendedorismo negócios startups marketing digital",
+            "query_en": "entrepreneurship business startups side hustle",
+            "pay": "High", "viral": "Medium",
+        },
+        "4":  {
+            "name": "Fitness",
+            "query_pt": "fitness treino musculação dieta saúde",
+            "query_en": "fitness workout gym diet weight loss health",
+            "pay": "Medium/High", "viral": "High",
+        },
+        "5":  {
+            "name": "Politics",
+            "query_pt": "política notícias brasil debate",
+            "query_en": "politics news debate usa congress",
+            "pay": "Medium", "viral": "High",
+        },
+        "6":  {
+            "name": "Gaming",
+            "query_pt": "games gameplay novidades jogos ps5 xbox",
+            "query_en": "gaming gameplay ps5 xbox pc games review",
+            "pay": "Low", "viral": "Very high",
+        },
+        "7":  {
+            "name": "Facts / Curiosities",
+            "query_pt": "curiosidades fatos desconhecidos documentário",
+            "query_en": "mind blowing facts did you know documentary",
+            "pay": "Low", "viral": "Very high",
+        },
+        "8":  {
+            "name": "Humor",
+            "query_pt": "humor comédia engraçado memes",
+            "query_en": "comedy funny memes fails compilation",
+            "pay": "Low", "viral": "Extremely high",
+        },
+        "9":  {
+            "name": "Luxury / Lifestyle",
+            "query_pt": "luxo mansões carros esportivos lifestyle rico",
+            "query_en": "luxury mansion supercar rich lifestyle billionaire",
+            "pay": "High", "viral": "Medium",
+        },
+        "10": {
+            "name": "Motivation",
+            "query_pt": "motivacional superação frases motivação desenvolvimento pessoal",
+            "query_en": "motivation mindset success self improvement hustle",
+            "pay": "Medium", "viral": "High",
+        },
+        "11": {
+            "name": "True Crime",
+            "query_pt": "crime verdadeiro casos policiais investigação",
+            "query_en": "true crime murder mystery investigation documentary",
+            "pay": "Medium/High", "viral": "Very high",
+        },
+        "12": {
+            "name": "Real Estate",
+            "query_pt": "imóveis investimento apartamento mercado imobiliário",
+            "query_en": "real estate investing house flipping airbnb passive income",
+            "pay": "Very high", "viral": "Medium",
+        },
     }
 
-    def __init__(self, client_secrets_file: str = "client_secrets.json", token_file: str = "token.pickle"):
+    def __init__(
+        self,
+        client_secrets_file: str = "client_secrets.json",
+        token_file: str = "token.pickle",
+        region: str = "BR",
+    ):
         self.client_secrets_file = client_secrets_file
         self.token_file = token_file
+        self.region = region.upper() if region.upper() in REGIONS else "BR"
         self.youtube = None
         self.authenticate()
 
@@ -69,27 +152,36 @@ class YouTubeSearcher:
                 pickle.dump(creds, token)
 
         self.youtube = build('youtube', 'v3', credentials=creds)
-        logger.info("Autenticação com YouTube concluída.")
+        logger.info(f"Autenticação com YouTube concluída. Região: {self.region}")
 
     def search_trending_videos(self, category_key: str, max_results: int = 5) -> List[Dict]:
         """
-        Searches for high-performance videos based on a category.
+        Searches for high-performance videos based on a category and the
+        configured region/language.
         """
         category = self.CATEGORIES.get(category_key)
         if not category:
             logger.error(f"Categoria {category_key} inválida.")
             return []
 
-        logger.info(f"Buscando {max_results} vídeos de '{category['name']}'...")
+        region_cfg = REGIONS[self.region]
+        lang_key   = "query_en" if self.region == "US" else "query_pt"
+        query      = category[lang_key]
+
+        logger.info(
+            f"Buscando {max_results} vídeos de '{category['name']}' | "
+            f"região={region_cfg['region']} idioma={region_cfg['language']}"
+        )
 
         request = self.youtube.search().list(
-            q=category['query'],
+            q=query,
             part="snippet",
             type="video",
             order="viewCount",
             maxResults=max_results,
-            regionCode="BR",
-            relevanceLanguage="pt"
+            regionCode=region_cfg["region"],
+            relevanceLanguage=region_cfg["language"],
+            videoDuration="medium", # Filtra vídeos entre 4 e 20 minutos (evita shorts)
         )
         
         try:
@@ -106,11 +198,13 @@ class YouTubeSearcher:
         videos = []
         for item in response.get('items', []):
             video_id = item['id']['videoId']
-            title = item['snippet']['title']
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            videos.append({"title": title, "url": url})
+            title    = item['snippet']['title']
+            channel  = item['snippet']['channelTitle']
+            url      = f"https://www.youtube.com/watch?v={video_id}"
+            videos.append({"title": title, "channel": channel, "url": url})
         
         return videos
+
 
 def get_existing_urls(filename: str) -> set:
     """
@@ -131,6 +225,7 @@ def get_existing_urls(filename: str) -> set:
         logger.error(f"Erro ao ler URLs existentes: {e}")
     return urls
 
+
 def save_to_list(videos: List[Dict], filename: str = "list.txt") -> int:
     """
     Adiciona novas URLs ao list.txt, pulando duplicadas.
@@ -147,25 +242,36 @@ def save_to_list(videos: List[Dict], filename: str = "list.txt") -> int:
         with open(filename, "a", encoding="utf-8") as f:
             f.write(f"\n# --- Novas adições: {len(new_videos)} vídeos ---\n")
             for v in new_videos:
-                f.write(f"{v['url']} # {v['title']}\n")
+                channel = v.get("channel", "")
+                comment = f"{v['title']} | {channel}" if channel else v['title']
+                f.write(f"{v['url']} # {comment}\n")
         logger.info(f"Lista salva em {filename} ({len(new_videos)} novos vídeos)")
         return len(new_videos)
     except Exception as e:
         logger.error(f"Erro ao salvar lista: {e}")
         return 0
 
+
 def main():
     print("\n=== Auto List YouTube - Viral Cutter ===")
+
+    # Seleção de região
+    print("\nSelecione o canal de destino:")
+    for key, val in REGIONS.items():
+        print(f"  [{key}] {val['label']}")
+    region_choice = input("\nRegião (BR/US): ").strip().upper()
+    if region_choice not in REGIONS:
+        region_choice = "BR"
+
+    searcher = YouTubeSearcher(region=region_choice)
     
-    searcher = YouTubeSearcher()
-    
-    print("\nSelecione o nicho:")
-    print(f"{'ID':<3} | {'Nicho':<20} | {'Pagamento':<15} | {'Viralização':<15}")
-    print("-" * 60)
+    print(f"\nNicho | Região: {REGIONS[region_choice]['label']}")
+    print(f"{'ID':<3} | {'Nicho':<22} | {'Pagamento':<15} | {'Viralização':<15}")
+    print("-" * 62)
     for key, val in YouTubeSearcher.CATEGORIES.items():
-        print(f"{key:<3} | {val['name']:<20} | {val['pay']:<15} | {val['viral']:<15}")
+        print(f"{key:<3} | {val['name']:<22} | {val['pay']:<15} | {val['viral']:<15}")
     
-    choice = input("\nEscolha uma opção (1-10): ").strip()
+    choice = input("\nEscolha uma opção (1-12): ").strip()
     if choice not in YouTubeSearcher.CATEGORIES:
         print("Opção inválida.")
         return
@@ -187,7 +293,8 @@ def main():
 
     print(f"\nEncontrados {len(videos)} vídeos:")
     for i, v in enumerate(videos, 1):
-        print(f"{i}. {v['title']} ({v['url']})")
+        print(f"{i}. [{v.get('channel','')}] {v['title']}")
+        print(f"   {v['url']}")
 
     confirm = input("\nDeseja salvar estes vídeos no arquivo list.txt? (s/n): ").strip().lower()
     if confirm == 's':
