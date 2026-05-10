@@ -32,3 +32,4 @@ batch_progress.json
 !session_report.json
 !cuts_selected.json
 !cuts_raw.json
+*.pickle

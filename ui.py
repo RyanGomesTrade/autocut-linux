@@ -35,6 +35,7 @@ from PySide6.QtGui import QIcon, QFont, QPixmap, QColor
 from ui_styles import APPLE_MINIMAL_THEME
 from ui_worker import PipelineWorker, DownloadWorker, BatchPipelineWorker
 from cutter import EXPORT_PRESETS
+from youtube_uploader import YouTubeUploader
 
 class ResultCard(QFrame):
     """
@@ -95,10 +96,12 @@ class ViralCutterApp(QMainWindow):
         
         # Application State
         self.worker = None
+        self.uploader = YouTubeUploader() # Inicializa o gerenciador de perfis
         self.config = {
             "input": "",
             "batch_list": None,
             "upload_youtube": False,
+            "youtube_profile_index": 0, # Índice do perfil selecionado
             "schedule_interval": 0,
             "output": os.path.normpath(os.path.join(os.path.expanduser("~"), "Videos", "ViralCutter")),
             "whisper_model": "medium",
@@ -405,7 +408,31 @@ class ViralCutterApp(QMainWindow):
         layout.addWidget(self.batch_table)
 
         # Batch Controls
-        bottom_row = QHBoxLayout()
+        bottom_row = QVBoxLayout()
+        
+        # Youtube Profile Selector Row
+        yt_profile_row = QHBoxLayout()
+        yt_profile_row.addWidget(QLabel("Canal do YouTube:"))
+        self.combo_yt_profile = QComboBox()
+        self._refresh_yt_profiles()
+        self.combo_yt_profile.currentIndexChanged.connect(lambda i: self._update_config("youtube_profile_index", i))
+        yt_profile_row.addWidget(self.combo_yt_profile)
+        
+        add_profile_btn = QPushButton("+ Novo Canal")
+        add_profile_btn.setObjectName("secondaryButton")
+        add_profile_btn.clicked.connect(self.show_add_profile_dialog)
+        yt_profile_row.addWidget(add_profile_btn)
+        
+        remove_profile_btn = QPushButton("Remover")
+        remove_profile_btn.setStyleSheet("color: #FF3B30;") # Vermelho Apple
+        remove_profile_btn.clicked.connect(self.remove_current_profile)
+        yt_profile_row.addWidget(remove_profile_btn)
+        
+        yt_profile_row.addStretch()
+        
+        bottom_row.addLayout(yt_profile_row)
+
+        controls_row = QHBoxLayout()
         self.batch_upload_check = QCheckBox("Upload automático para YouTube")
         self.batch_upload_check.setChecked(self.config.get("upload_youtube", False))
         self.batch_upload_check.toggled.connect(lambda b: self._update_config("upload_youtube", b))
@@ -424,13 +451,97 @@ class ViralCutterApp(QMainWindow):
         self.start_batch_btn.setMinimumHeight(50)
         self.start_batch_btn.clicked.connect(self.start_batch_pipeline)
         
-        bottom_row.addWidget(self.batch_upload_check)
-        bottom_row.addLayout(schedule_layout)
-        bottom_row.addStretch()
-        bottom_row.addWidget(self.start_batch_btn)
+        controls_row.addWidget(self.batch_upload_check)
+        controls_row.addLayout(schedule_layout)
+        controls_row.addStretch()
+        controls_row.addWidget(self.start_batch_btn)
+        
+        bottom_row.addLayout(controls_row)
         layout.addLayout(bottom_row)
 
         self.content_stack.addWidget(page)
+
+    def _refresh_yt_profiles(self):
+        """Atualiza o combobox de perfis do YouTube."""
+        self.combo_yt_profile.clear()
+        for p in self.uploader.profiles:
+            self.combo_yt_profile.addItem(p["name"])
+        self.combo_yt_profile.setCurrentIndex(self.config.get("youtube_profile_index", 0))
+
+    def show_add_profile_dialog(self):
+        """Mostra um diálogo simples para adicionar um novo perfil do YouTube."""
+        from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Adicionar Novo Canal")
+        layout = QFormLayout(dialog)
+        
+        # Sugere nomes baseados na quantidade de perfis
+        next_idx = len(self.uploader.profiles) + 1
+        name_edit = QLineEdit(f"Canal {next_idx}")
+        
+        # Layout para o arquivo de segredos com botão de procurar
+        secrets_row = QHBoxLayout()
+        secrets_edit = QLineEdit("client_secrets.json")
+        browse_secrets_btn = QPushButton("...")
+        browse_secrets_btn.setFixedWidth(30)
+        browse_secrets_btn.clicked.connect(lambda: self._browse_for_file(secrets_edit, "Segredos do Google (JSON)", "*.json"))
+        secrets_row.addWidget(secrets_edit)
+        secrets_row.addWidget(browse_secrets_btn)
+        
+        token_edit = QLineEdit(f"token_canal_{next_idx}.pickle")
+        
+        layout.addRow("Nome do Canal:", name_edit)
+        layout.addRow("Arquivo de Segredos:", secrets_row)
+        layout.addRow("Arquivo de Token:", token_edit)
+        
+        info_label = QLabel("Dica: O nome que aparece no Google (v1 ou v2) depende de qual arquivo JSON você selecionar.")
+        info_label.setStyleSheet("color: #007AFF; font-size: 11px; font-weight: bold;")
+        layout.addRow(info_label)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        
+        if dialog.exec() == QDialog.Accepted:
+            name = name_edit.text().strip()
+            secrets = secrets_edit.text().strip()
+            token = token_edit.text().strip()
+            
+            if name and secrets and token:
+                self.uploader.add_profile(name, secrets, token)
+                self._refresh_yt_profiles()
+                # Tenta autenticar imediatamente para gerar o token
+                self.uploader.authenticate(len(self.uploader.profiles) - 1)
+                self.combo_yt_profile.setCurrentIndex(len(self.uploader.profiles) - 1)
+
+    def remove_current_profile(self):
+        """Remove o perfil selecionado atualmente."""
+        idx = self.combo_yt_profile.currentIndex()
+        if idx < 0: return
+        
+        profile_name = self.uploader.profiles[idx]["name"]
+        confirm = QMessageBox.question(
+            self, "Confirmar Remoção",
+            f"Deseja realmente remover o canal '{profile_name}'?\nIsso também apagará o arquivo de token local.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            self.uploader.remove_profile(idx)
+            self._refresh_yt_profiles()
+            self._update_config("youtube_profile_index", self.combo_yt_profile.currentIndex())
+
+    def _browse_for_file(self, line_edit, name, pattern):
+        """Abre seletor de arquivos e atualiza o line_edit."""
+        path, _ = QFileDialog.getOpenFileName(self, f"Selecionar {name}", "", f"{name} ({pattern})")
+        if path:
+            # Tenta salvar apenas o nome do arquivo se estiver no diretório atual
+            root = os.getcwd()
+            if path.startswith(root):
+                path = os.path.relpath(path, root)
+            line_edit.setText(path)
 
     def add_batch_row(self, url="", preset="shorts", title=""):
         row = self.batch_table.rowCount()

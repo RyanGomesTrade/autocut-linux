@@ -31,9 +31,8 @@ class BatchProcessor:
         
         if upload_to_youtube:
             try:
-                secrets_path = os.path.join(ROOT_DIR, "client_secrets.json")
-                token_path = os.path.join(ROOT_DIR, "token.pickle")
-                self.uploader = YouTubeUploader(client_secrets_file=secrets_path, token_file=token_path)
+                # Agora o YouTubeUploader gerencia seus próprios perfis via youtube_profiles.json
+                self.uploader = YouTubeUploader()
             except Exception as e:
                 logger.error(f"Falha ao inicializar o uploader do YouTube: {e}")
                 logger.warning("O processamento continuará sem upload automático.")
@@ -75,6 +74,13 @@ class BatchProcessor:
 
         # Inicializa o tempo de agendamento apenas no início do lote
         self.schedule_interval = custom_args.get("schedule_interval", 0) if custom_args else 0
+        
+        # Define o perfil inicial do YouTube se o upload estiver ativado
+        if self.upload_to_youtube and self.uploader:
+            initial_profile = custom_args.get("youtube_profile_index", 0) if custom_args else 0
+            if initial_profile < len(self.uploader.profiles):
+                self.uploader.authenticate(initial_profile)
+
         if self.schedule_interval > 0:
             # YouTube API exige horário em UTC
             self.last_scheduled_time = datetime.now(timezone.utc)
