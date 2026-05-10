@@ -11,6 +11,7 @@ O **Viral Cutter Pro** é um ecossistema completo e automatizado para transforma
 - **Upload Automático para YouTube**: Integração direta com a YouTube Data API v3 para postagem sem intervenção manual.
 - **Agendamento Inteligente**: Defina um intervalo (ex: 4 em 4 horas) e o sistema agenda as postagens automaticamente no YouTube, garantindo presença nos horários de pico.
 - **Títulos Virais**: O sistema utiliza o "Hook" gerado pela IA como título do vídeo e adiciona hashtags estratégicas.
+- **AutoList Explorer (NOVO)**: Explore nichos lucrativos (Finanças, IA, Luxo, etc.) e descubra vídeos em alta automaticamente para alimentar sua lista de processamento.
 
 ---
 
@@ -28,6 +29,8 @@ AUTO_CUT_/
 ├── subtitle_generator.py # Geração de SRT e estilização
 ├── downloader.py         # Módulo de download do YouTube
 ├── ui_worker.py          # Gerenciamento de threads para a UI
+├── auto_list_ui.py       # Explorer de nichos e busca de vídeos (GUI)
+├── auto_list.py          # Lógica de busca e descoberta no YouTube
 └── requirements.txt      # Dependências do projeto
 ```
 

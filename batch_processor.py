@@ -55,10 +55,16 @@ class BatchProcessor:
         if not os.path.exists(self.list_file):
             logger.error(f"Arquivo de lista não encontrado: {self.list_file}")
             return []
+        urls = []
         with open(self.list_file, 'r', encoding='utf-8') as f:
-            return [line.strip() for line in f if line.strip() and not line.startswith('#')]
-
-            self.save_progress()
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    # Pega apenas a parte antes do comentário #
+                    url = line.split('#')[0].strip()
+                    if url:
+                        urls.append(url)
+        return urls
 
     def process_jobs(self, jobs, custom_args=None):
         """
@@ -141,14 +147,19 @@ class BatchProcessor:
                 if not os.path.isabs(file_path):
                     file_path = os.path.join(output_dir, file_path)
                 
-                # Tenta pegar o hook da IA, se não tiver, usa o padrão
+                # Tenta pegar o hook da IA, se não tiver ou for genérico, usa o título original
                 hook = hook_map.get(cut.get("start"))
                 title_prefix = custom_args.get("title_prefix", "") if custom_args else ""
                 
-                if hook:
+                # Lista de hooks genéricos a evitar como título principal
+                generic_hooks = ["Trecho selecionado via análise heurística", "Trecho interessante", "Corte"]
+                
+                is_valid_hook = hook and hook.strip() and hook not in generic_hooks
+                
+                if is_valid_hook:
                     title = f"{title_prefix + ' ' if title_prefix else ''}{hook} #shorts"
                 else:
-                    title = f"{title_prefix + ' ' if title_prefix else ''}{original_title} - Corte {cut['cut_index']} #shorts"
+                    title = f"{title_prefix + ' ' if title_prefix else ''}{original_title} - Parte {cut['cut_index']} #shorts"
                 
                 description = f"{hook if hook else ''}\n\nCorte automático gerado pelo Viral Cutter.\nOriginal: {report['input_video']}"
                 

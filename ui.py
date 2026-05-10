@@ -497,9 +497,15 @@ class ViralCutterApp(QMainWindow):
         if path:
             with open(path, 'r', encoding='utf-8') as f:
                 for line in f:
-                    url = line.strip()
-                    if url and not url.startswith('#'):
-                        self.add_batch_row(url=url, preset=self.config["preset"])
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Divide a linha no '#' para separar URL de um possível título/comentário
+                        parts = line.split('#', 1)
+                        url = parts[0].strip()
+                        title = parts[1].strip() if len(parts) > 1 else ""
+                        
+                        if url:
+                            self.add_batch_row(url=url, preset=self.config["preset"], title=title)
 
     def start_batch_pipeline(self):
         jobs = []

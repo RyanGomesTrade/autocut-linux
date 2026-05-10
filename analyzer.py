@@ -378,12 +378,16 @@ class HeuristicAnalyzer:
             if len(text.split()) < 20:
                 score -= 20
                 
+            # Tenta gerar um hook melhor baseado no início do texto
+            words = text.split()
+            hook_text = " ".join(words[:8]).capitalize() + "..." if len(words) > 0 else "Trecho interessante"
+
             cuts.append(ViralCut(
                 start=float(start),
                 end=float(end),
                 duration=float(end - start),
                 viral_score=score,
-                hook="Trecho selecionado via análise heurística",
+                hook=hook_text,
                 summary=text[:100] + "...",
                 motivo="Detectado via densidade de palavras e palavras-chave."
             ))
