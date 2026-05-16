@@ -173,15 +173,20 @@ class YouTubeSearcher:
             f"região={region_cfg['region']} idioma={region_cfg['language']}"
         )
 
+        from datetime import datetime, timedelta
+        # Busca vídeos dos últimos 30 dias para garantir que são "frescos"
+        published_after = (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
+
         request = self.youtube.search().list(
             q=query,
             part="snippet",
             type="video",
-            order="viewCount",
+            order="relevance", # Mudado de viewCount para relevance para mais variedade
             maxResults=max_results,
             regionCode=region_cfg["region"],
             relevanceLanguage=region_cfg["language"],
-            videoDuration="medium", # Filtra vídeos entre 4 e 20 minutos (evita shorts)
+            videoDuration="medium", 
+            publishedAfter=published_after # FILTRO DE DATA
         )
         
         try:

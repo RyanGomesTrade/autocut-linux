@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QFrame, QStackedWidget,
     QProgressBar, QPlainTextEdit, QScrollArea, QGridLayout,
     QComboBox, QCheckBox, QSpinBox, QLineEdit, QGroupBox,
-    QSizePolicy, QSpacerItem, QTableWidget, QTableWidgetItem, QHeaderView
+    QSizePolicy, QSpacerItem, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QRadioButton, QButtonGroup
 )
 from PySide6.QtCore import Qt, QSize, Signal, Slot, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon, QFont, QPixmap, QColor
@@ -101,6 +102,7 @@ class ViralCutterApp(QMainWindow):
             "input": "",
             "batch_list": None,
             "upload_youtube": False,
+            "use_playwright": False, # Nova opção
             "youtube_profile_index": 0, # Índice do perfil selecionado
             "schedule_interval": 0,
             "output": os.path.normpath(os.path.join(os.path.expanduser("~"), "Videos", "ViralCutter")),
@@ -157,41 +159,78 @@ class ViralCutterApp(QMainWindow):
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(0, 20, 0, 20)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
         
         # Logo / Title
+        logo_container = QWidget()
+        logo_layout = QVBoxLayout(logo_container)
+        logo_layout.setContentsMargins(20, 30, 20, 10)
+        
         logo_label = QLabel("🎬 Viral Cutter")
-        logo_label.setStyleSheet("font-size: 20px; font-weight: 800; color: #1D1D1F; padding: 10px 20px; margin-bottom: 20px;")
-        sidebar_layout.addWidget(logo_label)
+        logo_label.setStyleSheet("font-size: 22px; font-weight: 800; color: #1D1D1F; margin-bottom: 5px;")
+        logo_layout.addWidget(logo_label)
+        
+        version_label = QLabel("Version 2.0 Pro")
+        version_label.setStyleSheet("font-size: 11px; color: #86868B; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;")
+        logo_layout.addWidget(version_label)
+        sidebar_layout.addWidget(logo_container)
+
+        # Nav Buttons Section
+        nav_container = QWidget()
+        nav_layout = QVBoxLayout(nav_container)
+        nav_layout.setContentsMargins(0, 20, 0, 0)
+        nav_layout.setSpacing(2)
+
+        nav_label = QLabel("MENU PRINCIPAL")
+        nav_label.setObjectName("sectionTitle")
+        nav_layout.addWidget(nav_label)
 
         # Nav Buttons
         self.nav_btns = []
-        self.btn_dashboard = self._create_nav_btn("Dashboard", 0)
-        self.btn_lote = self._create_nav_btn("Gerenciar Lote", 1) # Nova aba
-        self.btn_settings = self._create_nav_btn("Configurações", 2)
-        self.btn_progress = self._create_nav_btn("Progresso", 3)
-        self.btn_results = self._create_nav_btn("Resultados", 4)
+        self.btn_dashboard = self._create_nav_btn("📊 Dashboard", 0)
+        self.btn_lote = self._create_nav_btn("📦 Gerenciador de Lote", 1)
+        self.btn_settings = self._create_nav_btn("⚙️ Configurações", 2)
         
-        sidebar_layout.addWidget(self.btn_dashboard)
-        sidebar_layout.addWidget(self.btn_lote)
-        sidebar_layout.addWidget(self.btn_settings)
-        sidebar_layout.addWidget(self.btn_progress)
-        sidebar_layout.addWidget(self.btn_results)
+        nav_layout.addWidget(self.btn_dashboard)
+        nav_layout.addWidget(self.btn_lote)
+        nav_layout.addWidget(self.btn_settings)
         
+        # Monitor Section
+        mon_label = QLabel("MONITORAMENTO")
+        mon_label.setObjectName("sectionTitle")
+        nav_layout.addWidget(mon_label)
+        
+        self.btn_progress = self._create_nav_btn("🚀 Progresso", 3)
+        self.btn_results = self._create_nav_btn("✨ Resultados", 4)
+        
+        nav_layout.addWidget(self.btn_progress)
+        nav_layout.addWidget(self.btn_results)
+        
+        sidebar_layout.addWidget(nav_container)
         sidebar_layout.addStretch()
         
+        # Engine Status Card
         status_box = QFrame()
-        status_box.setStyleSheet("background-color: #E5E5EA; margin: 10px; border-radius: 8px; padding: 10px;")
+        status_box.setObjectName("resultCard")
+        status_box.setStyleSheet("margin: 20px; padding: 12px; background-color: #FBFBFB;")
         status_layout = QVBoxLayout(status_box)
+        
+        status_header = QLabel("SISTEMA")
+        status_header.setStyleSheet("font-size: 10px; font-weight: 700; color: #86868B;")
+        status_layout.addWidget(status_header)
+        
         self.engine_status = QLabel("Ollama: Verificando...")
-        self.engine_status.setStyleSheet("font-size: 11px; color: #86868B;")
+        self.engine_status.setStyleSheet("font-size: 12px; color: #1D1D1F; font-weight: 500;")
         status_layout.addWidget(self.engine_status)
+        
         sidebar_layout.addWidget(status_box)
 
         main_layout.addWidget(self.sidebar)
 
         # 2. Content Area (Stacked Widget)
         self.content_stack = QStackedWidget()
+        self.content_stack.setStyleSheet("background-color: #FAFAFA; border-left: 1px solid #E5E5EA;")
         
         self._setup_dashboard_page()
         self._setup_batch_page() # Nova página
@@ -326,11 +365,36 @@ class ViralCutterApp(QMainWindow):
         self.check_resume.toggled.connect(self.toggle_resume)
         quick_grid.addWidget(self.check_resume, 2, 0, 1, 2)
         
-        self.check_upload = QCheckBox("Upload automático para o YouTube")
-        self.check_upload.setToolTip("Somente ativado para processamento em lote (lista).")
+        self.check_upload = QCheckBox("Habilitar Upload Automático")
         self.check_upload.setChecked(self.config.get("upload_youtube", False))
         self.check_upload.toggled.connect(lambda b: self._update_config("upload_youtube", b))
-        quick_grid.addWidget(self.check_upload, 3, 0, 1, 2)
+        quick_grid.addWidget(self.check_upload, 3, 0)
+        
+        method_layout = QHBoxLayout()
+        self.radio_api = QRadioButton("API (Rápido)")
+        self.radio_pw = QRadioButton("Playwright (Sem limites)")
+        
+        self.method_group = QButtonGroup(self)
+        self.method_group.addButton(self.radio_api, 0)
+        self.method_group.addButton(self.radio_pw, 1)
+        
+        if self.config.get("use_playwright"):
+            self.radio_pw.setChecked(True)
+        else:
+            self.radio_api.setChecked(True)
+            
+        self.method_group.buttonClicked.connect(self._on_upload_method_changed)
+        
+        method_layout.addWidget(self.radio_api)
+        method_layout.addWidget(self.radio_pw)
+        quick_grid.addLayout(method_layout, 3, 1)
+        
+        # Seletor de Canal (NOVO no Dashboard)
+        quick_grid.addWidget(QLabel("Canal Ativo:"), 4, 0)
+        self.combo_yt_profile_dash = QComboBox()
+        self._refresh_yt_profiles() # Preenche os perfis
+        self.combo_yt_profile_dash.currentIndexChanged.connect(self._on_yt_profile_changed)
+        quick_grid.addWidget(self.combo_yt_profile_dash, 4, 1)
         
         layout.addLayout(quick_grid)
         layout.addStretch()
@@ -415,13 +479,28 @@ class ViralCutterApp(QMainWindow):
         yt_profile_row.addWidget(QLabel("Canal do YouTube:"))
         self.combo_yt_profile = QComboBox()
         self._refresh_yt_profiles()
-        self.combo_yt_profile.currentIndexChanged.connect(lambda i: self._update_config("youtube_profile_index", i))
+        self.combo_yt_profile.currentIndexChanged.connect(self._on_yt_profile_changed)
         yt_profile_row.addWidget(self.combo_yt_profile)
         
         add_profile_btn = QPushButton("+ Novo Canal")
         add_profile_btn.setObjectName("secondaryButton")
         add_profile_btn.clicked.connect(self.show_add_profile_dialog)
         yt_profile_row.addWidget(add_profile_btn)
+        
+        rename_profile_btn = QPushButton("Renomear")
+        rename_profile_btn.setObjectName("secondaryButton")
+        rename_profile_btn.clicked.connect(self.rename_current_profile)
+        yt_profile_row.addWidget(rename_profile_btn)
+        
+        login_browser_btn = QPushButton("Login Navegador")
+        login_browser_btn.setObjectName("secondaryButton")
+        login_browser_btn.clicked.connect(self.login_via_playwright)
+        yt_profile_row.addWidget(login_browser_btn)
+        
+        reset_browser_btn = QPushButton("Reset Navegador")
+        reset_browser_btn.setObjectName("secondaryButton")
+        reset_browser_btn.clicked.connect(self.reset_playwright_session)
+        yt_profile_row.addWidget(reset_browser_btn)
         
         remove_profile_btn = QPushButton("Remover")
         remove_profile_btn.setStyleSheet("color: #FF3B30;") # Vermelho Apple
@@ -433,9 +512,26 @@ class ViralCutterApp(QMainWindow):
         bottom_row.addLayout(yt_profile_row)
 
         controls_row = QHBoxLayout()
-        self.batch_upload_check = QCheckBox("Upload automático para YouTube")
-        self.batch_upload_check.setChecked(self.config.get("upload_youtube", False))
-        self.batch_upload_check.toggled.connect(lambda b: self._update_config("upload_youtube", b))
+        controls_row.addWidget(self.check_upload) # Reusa o check do dashboard
+        
+        method_layout_batch = QHBoxLayout()
+        self.radio_api_batch = QRadioButton("API")
+        self.radio_pw_batch = QRadioButton("Playwright")
+        
+        self.method_group_batch = QButtonGroup(self)
+        self.method_group_batch.addButton(self.radio_api_batch, 0)
+        self.method_group_batch.addButton(self.radio_pw_batch, 1)
+        
+        if self.config.get("use_playwright"):
+            self.radio_pw_batch.setChecked(True)
+        else:
+            self.radio_api_batch.setChecked(True)
+            
+        self.method_group_batch.buttonClicked.connect(self._on_upload_method_changed)
+        
+        method_layout_batch.addWidget(self.radio_api_batch)
+        method_layout_batch.addWidget(self.radio_pw_batch)
+        controls_row.addLayout(method_layout_batch)
         
         schedule_layout = QHBoxLayout()
         schedule_layout.addWidget(QLabel("Agendar (intervalo em horas):"))
@@ -450,8 +546,7 @@ class ViralCutterApp(QMainWindow):
         self.start_batch_btn.setObjectName("primaryButton")
         self.start_batch_btn.setMinimumHeight(50)
         self.start_batch_btn.clicked.connect(self.start_batch_pipeline)
-        
-        controls_row.addWidget(self.batch_upload_check)
+
         controls_row.addLayout(schedule_layout)
         controls_row.addStretch()
         controls_row.addWidget(self.start_batch_btn)
@@ -462,11 +557,64 @@ class ViralCutterApp(QMainWindow):
         self.content_stack.addWidget(page)
 
     def _refresh_yt_profiles(self):
-        """Atualiza o combobox de perfis do YouTube."""
-        self.combo_yt_profile.clear()
-        for p in self.uploader.profiles:
-            self.combo_yt_profile.addItem(p["name"])
-        self.combo_yt_profile.setCurrentIndex(self.config.get("youtube_profile_index", 0))
+        """Atualiza os comboboxes de perfis do YouTube."""
+        # Salva o índice atual se existir
+        curr_idx = self.config.get("youtube_profile_index", 0)
+        
+        # Atualiza Combo do Dashboard
+        if hasattr(self, 'combo_yt_profile_dash'):
+            self.combo_yt_profile_dash.clear()
+            for p in self.uploader.profiles:
+                self.combo_yt_profile_dash.addItem(p["name"])
+            self.combo_yt_profile_dash.setCurrentIndex(curr_idx)
+
+        # Atualiza Combo do Gerenciar Lote
+        if hasattr(self, 'combo_yt_profile'):
+            self.combo_yt_profile.clear()
+            for p in self.uploader.profiles:
+                self.combo_yt_profile.addItem(p["name"])
+            self.combo_yt_profile.setCurrentIndex(curr_idx)
+
+    def login_via_playwright(self):
+        """Abre o navegador para o usuário logar no YouTube Studio."""
+        from playwright_uploader import PlaywrightUploader
+        
+        # Obtém o nome do perfil selecionado para separar as sessões
+        profile_index = self.combo_yt_profile.currentIndex()
+        profile_name = "default"
+        if 0 <= profile_index < len(self.uploader.profiles):
+            profile_name = self.uploader.profiles[profile_index]["name"]
+
+        try:
+            uploader = PlaywrightUploader(profile_name=profile_name)
+            uploader.login()
+            uploader.close()
+            QMessageBox.information(self, "Playwright", f"Sessão de login para '{profile_name}' salva com sucesso!")
+        except Exception as e:
+            QMessageBox.critical(self, "Erro Playwright", f"Não foi possível abrir o navegador para '{profile_name}':\n{e}")
+
+    def reset_playwright_session(self):
+        """Reseta a sessão do Playwright para o canal selecionado."""
+        from playwright_uploader import PlaywrightUploader
+        idx = self.combo_yt_profile.currentIndex()
+        if idx < 0: return
+        
+        profile_name = self.uploader.profiles[idx]["name"]
+        confirm = QMessageBox.question(
+            self, "Confirmar Reset",
+            f"Deseja realmente deslogar do canal '{profile_name}' no navegador?\nIsso removerá apenas a sessão salva no Playwright.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            try:
+                uploader = PlaywrightUploader(profile_name=profile_name)
+                if uploader.reset_session():
+                    QMessageBox.information(self, "Sucesso", f"Sessão do canal '{profile_name}' resetada. Você precisará fazer login novamente.")
+                else:
+                    QMessageBox.warning(self, "Aviso", "Nenhuma sessão encontrada para este canal.")
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Erro ao resetar sessão: {e}")
 
     def show_add_profile_dialog(self):
         """Mostra um diálogo simples para adicionar um novo perfil do YouTube."""
@@ -515,6 +663,25 @@ class ViralCutterApp(QMainWindow):
                 # Tenta autenticar imediatamente para gerar o token
                 self.uploader.authenticate(len(self.uploader.profiles) - 1)
                 self.combo_yt_profile.setCurrentIndex(len(self.uploader.profiles) - 1)
+
+    def rename_current_profile(self):
+        """Abre um diálogo para renomear o perfil selecionado."""
+        idx = self.combo_yt_profile.currentIndex()
+        if idx < 0: return
+        
+        old_name = self.uploader.profiles[idx]["name"]
+        
+        from PySide6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(
+            self, "Renomear Canal", 
+            f"Novo nome para o canal '{old_name}':",
+            QLineEdit.Normal, old_name
+        )
+        
+        if ok and new_name.strip() and new_name != old_name:
+            if self.uploader.rename_profile(idx, new_name.strip()):
+                self._refresh_yt_profiles()
+                QMessageBox.information(self, "Sucesso", f"Canal renomeado para '{new_name.strip()}' com sucesso.")
 
     def remove_current_profile(self):
         """Remove o perfil selecionado atualmente."""
@@ -970,6 +1137,47 @@ class ViralCutterApp(QMainWindow):
 
     def _update_config(self, key, value):
         self.config[key] = value
+
+    def _on_yt_profile_changed(self, index):
+        """Chamado quando o usuário troca o canal (perfil) do YouTube."""
+        if index < 0 or index >= len(self.uploader.profiles):
+            return
+            
+        self._update_config("youtube_profile_index", index)
+        
+        # Sincroniza os dois menus (Dashboard e Gerenciar Lote)
+        if hasattr(self, 'combo_yt_profile_dash') and self.combo_yt_profile_dash.currentIndex() != index:
+            self.combo_yt_profile_dash.blockSignals(True)
+            self.combo_yt_profile_dash.setCurrentIndex(index)
+            self.combo_yt_profile_dash.blockSignals(False)
+            
+        if hasattr(self, 'combo_yt_profile') and self.combo_yt_profile.currentIndex() != index:
+            self.combo_yt_profile.blockSignals(True)
+            self.combo_yt_profile.setCurrentIndex(index)
+            self.combo_yt_profile.blockSignals(False)
+            
+        logger.info(f"Perfil do YouTube alterado para: {self.uploader.profiles[index]['name']}")
+
+    def _on_upload_method_changed(self, btn):
+        """Chamado quando o usuário troca entre API e Playwright."""
+        # Se for ID 1, é Playwright. Se for 0, é API.
+        # Tenta pegar de qualquer um dos grupos
+        if hasattr(self, 'method_group') and btn in self.method_group.buttons():
+            use_pw = (self.method_group.id(btn) == 1)
+        elif hasattr(self, 'method_group_batch') and btn in self.method_group_batch.buttons():
+            use_pw = (self.method_group_batch.id(btn) == 1)
+        else:
+            return
+
+        self.config["use_playwright"] = use_pw
+        
+        # Sincroniza os estados na UI
+        if hasattr(self, 'radio_pw'): self.radio_pw.setChecked(use_pw)
+        if hasattr(self, 'radio_api'): self.radio_api.setChecked(not use_pw)
+        if hasattr(self, 'radio_pw_batch'): self.radio_pw_batch.setChecked(use_pw)
+        if hasattr(self, 'radio_api_batch'): self.radio_api_batch.setChecked(not use_pw)
+        
+        logger.info(f"Método de upload alterado para: {'Playwright' if use_pw else 'API'}")
 
     def update_sub_style(self, index):
         styles = ["high_impact", "hardcoded", "soft", "none"]

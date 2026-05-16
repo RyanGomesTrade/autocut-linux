@@ -9,6 +9,7 @@ from pathlib import Path
 from main import run_pipeline, DEFAULT_CONFIG
 from downloader import download_youtube_video
 from youtube_uploader import YouTubeUploader
+from playwright_uploader import PlaywrightUploader
 from utils import setup_logging, ensure_dir
 
 # Diretório raiz do projeto
@@ -18,25 +19,46 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = setup_logging(log_level="INFO", log_file="batch_processing.log")
 
 class BatchProcessor:
-    def __init__(self, list_file: str, output_base_dir: str = "batch_output", upload_to_youtube: bool = False):
+    def __init__(self, list_file: str, output_base_dir: str = "batch_output", upload_to_youtube: bool = False, custom_args: dict = None):
         self.list_file = list_file
         self.output_base_dir = ensure_dir(output_base_dir)
         self.upload_to_youtube = upload_to_youtube
         self.progress_file = os.path.join(output_base_dir, "batch_progress.json")
         self.uploader = None
+        self.playwright_uploader = None
         
         # Agendamento
         self.schedule_interval = 0 # em horas
         self.last_scheduled_time = None
         
         if upload_to_youtube:
+            # Tenta inicializar Playwright se solicitado (fallback ou principal)
+            if custom_args and custom_args.get("use_playwright"):
+                try:
+                    # Pega o nome do perfil selecionado para usar a sessão correta
+                    profile_index = custom_args.get("youtube_profile_index", 0)
+                    profile_name = "default"
+                    
+                    # Precisamos carregar o nome do perfil do YouTubeUploader para o Playwright
+                    temp_uploader = YouTubeUploader()
+                    if profile_index < len(temp_uploader.profiles):
+                        profile_name = temp_uploader.profiles[profile_index]["name"]
+                    
+                    self.playwright_uploader = PlaywrightUploader(profile_name=profile_name)
+                    logger.info(f"Uploader Playwright inicializado para o perfil: {profile_name}")
+                except Exception as e:
+                    logger.error(f"Falha ao inicializar Playwright: {e}")
+
+            # Tenta inicializar API Uploader
             try:
-                # Agora o YouTubeUploader gerencia seus próprios perfis via youtube_profiles.json
                 self.uploader = YouTubeUploader()
             except Exception as e:
-                logger.error(f"Falha ao inicializar o uploader do YouTube: {e}")
-                logger.warning("O processamento continuará sem upload automático.")
-                self.upload_to_youtube = False
+                logger.error(f"Falha ao inicializar o uploader do YouTube (API): {e}")
+                if not self.playwright_uploader:
+                    logger.warning("O processamento continuará sem upload automático (API e Playwright falharam).")
+                    self.upload_to_youtube = False
+                else:
+                    logger.info("API falhou, mas Playwright está disponível. Upload continuará via Playwright.")
 
         self.progress = self.load_progress()
 
@@ -137,7 +159,7 @@ class BatchProcessor:
         run_pipeline(pipeline_args)
 
         # 4. Upload to YouTube
-        if self.upload_to_youtube and self.uploader:
+        if self.upload_to_youtube and (self.uploader or self.playwright_uploader):
             self.upload_results(current_output, video_name, custom_args)
 
     def upload_results(self, output_dir, original_title, custom_args=None):
@@ -172,7 +194,7 @@ class BatchProcessor:
                 else:
                     title = f"{title_prefix + ' ' if title_prefix else ''}{original_title} - Parte {cut['cut_index']} #shorts"
                 
-                description = f"{hook if hook else ''}\n\nCorte automático gerado pelo Viral Cutter.\nOriginal: {report['input_video']}"
+                description = f"{hook if hook else ''}"
                 
                 # Lógica de Agendamento
                 publish_at = None
@@ -182,17 +204,49 @@ class BatchProcessor:
                     publish_at = self.last_scheduled_time.strftime("%Y-%m-%dT%H:%M:%SZ")
                     logger.info(f"Agendando vídeo '{title}' para: {publish_at}")
 
-                try:
-                    video_id = self.uploader.upload_video(
-                        file_path=file_path,
-                        title=title[:100], # Limite do YouTube
-                        description=description,
-                        privacy_status="public", # Agora os vídeos sobem direto como Públicos
-                        publish_at=publish_at
-                    )
-                    cut["youtube_id"] = video_id
-                except Exception as e:
-                    logger.error(f"Erro no upload do corte {cut['cut_index']}: {e}")
+                # 🚀 Geração de Título Dinâmico (IA/Heurística)
+                # Se o job não tem um título prefixo, tentamos gerar um baseado no original do YouTube
+                original_title = job.get("title", "")
+                if not original_title and url:
+                    # Tenta inferir algo da URL ou usa um padrão
+                    original_title = "Vídeo Viral"
+                
+                # Heurística para título de Shorts (Curto, Impactante, com Hashtags)
+                clean_title = original_title.split("|")[0].split("-")[0].strip()
+                dynamic_title = f"{clean_title} #shorts #viral #curiosidades"
+                if len(dynamic_title) > 100:
+                    dynamic_title = dynamic_title[:90] + "..."
+                
+                final_title = dynamic_title
+
+                # Prioriza Playwright se estiver ativo
+                if custom_args and custom_args.get("use_playwright") and self.playwright_uploader:
+                    try:
+                        success = self.playwright_uploader.upload_video(
+                            file_path=file_path,
+                            title=final_title,
+                            description=description,
+                            publish_at=publish_at
+                        )
+                        if success:
+                            logger.info(f"Upload via Playwright concluído: {final_title}")
+                            continue # Pula o upload via API
+                    except Exception as e:
+                        logger.error(f"Erro no upload via Playwright do corte {cut['cut_index']}: {e}")
+                 
+                # Fallback ou Principal: API
+                if self.uploader:
+                    try:
+                        video_id = self.uploader.upload_video(
+                            file_path=file_path,
+                            title=final_title,
+                            description=description,
+                            privacy_status="public", # Agora os vídeos sobem direto como Públicos
+                            publish_at=publish_at
+                        )
+                        cut["youtube_id"] = video_id
+                    except Exception as e:
+                        logger.error(f"Erro no upload do corte {cut['cut_index']}: {e}")
 
         # Atualiza o relatório com os IDs do YouTube
         with open(report_path, 'w', encoding='utf-8') as f:

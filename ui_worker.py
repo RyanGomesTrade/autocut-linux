@@ -13,6 +13,8 @@ from PySide6.QtCore import QThread, Signal, QObject
 from main import run_pipeline
 from downloader import download_youtube_video
 from batch_processor import BatchProcessor
+from playwright_uploader import PlaywrightUploader
+from youtube_uploader import YouTubeUploader
 
 class SignallingHandler(logging.Handler):
     """
@@ -85,6 +87,55 @@ class PipelineWorker(QThread):
                         results = report_data.get("exported_files", [])
                 
                 self.results_ready_signal.emit(results)
+                
+                # NOVO: Lógica de Upload para Vídeo Único
+                if self.config_dict.get("upload_youtube"):
+                    self.status_signal.emit("Iniciando upload automático...")
+                    use_playwright = self.config_dict.get("use_playwright", False)
+                    
+                    for cut in results:
+                        if cut.get("success") and cut.get("file"):
+                            file_path = cut["file"]
+                            if not os.path.isabs(file_path):
+                                file_path = os.path.join(args.output, file_path)
+                            
+                            title = f"{os.path.basename(file_path)} #shorts"
+                            description = ""
+                            
+                            if use_playwright:
+                                # Obtém o nome do perfil selecionado para separar as sessões
+                                profile_name = "default"
+                                try:
+                                    import json
+                                    profiles_path = "youtube_profiles.json"
+                                    if os.path.exists(profiles_path):
+                                        with open(profiles_path, "r", encoding="utf-8") as f:
+                                            profiles = json.load(f)
+                                            profile_index = self.config_dict.get("youtube_profile_index", 0)
+                                            if 0 <= profile_index < len(profiles):
+                                                profile_name = profiles[profile_index]["name"]
+                                except:
+                                    pass
+
+                                self.log_signal.emit(f"🚀 [PLAYWRIGHT] Perfil ativo: {profile_name}")
+                                try:
+                                    pw_uploader = PlaywrightUploader(profile_name=profile_name)
+                                    pw_uploader.upload_video(file_path, title, description)
+                                    pw_uploader.close()
+                                    self.log_signal.emit(f"✅ Upload concluído em: {profile_name}")
+                                except Exception as e:
+                                    self.log_signal.emit(f"❌ Erro no upload Playwright: {e}")
+                            else:
+                                self.log_signal.emit(f"📤 Upload via API: {title}")
+                                try:
+                                    yt_uploader = YouTubeUploader()
+                                    # Usa o perfil selecionado
+                                    yt_uploader.authenticate(self.config_dict.get("youtube_profile_index", 0))
+                                    yt_uploader.upload_video(file_path, title, description, privacy_status="public")
+                                    self.log_signal.emit(f"✅ Upload concluído!")
+                                except Exception as e:
+                                    self.log_signal.emit(f"❌ Erro no upload API: {e}")
+
                 self.finished_signal.emit(True, report_path)
             else:
                 self.status_signal.emit("Ocorreu um erro durante o processamento.")
@@ -170,17 +221,18 @@ class BatchPipelineWorker(QThread):
             upload = self.config_dict.get("upload_youtube", False)
             output_dir = self.config_dict.get("output", "batch_output")
             
-            processor = BatchProcessor(
-                list_file=list_file or "list.txt",
-                output_base_dir=output_dir,
-                upload_to_youtube=upload
-            )
-            
             # Repassar parâmetros customizados
             custom_args = dict(self.config_dict)
             if "batch_list" in custom_args: del custom_args["batch_list"]
             if "batch_jobs" in custom_args: del custom_args["batch_jobs"]
             if "input" in custom_args: del custom_args["input"]
+            
+            processor = BatchProcessor(
+                list_file=list_file or "list.txt",
+                output_base_dir=output_dir,
+                upload_to_youtube=upload,
+                custom_args=custom_args
+            )
             
             if jobs:
                 processor.process_jobs(jobs, custom_args)

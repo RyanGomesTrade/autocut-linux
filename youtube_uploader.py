@@ -79,8 +79,51 @@ class YouTubeUploader:
                 except Exception as e:
                     logger.warning(f"Não foi possível remover o arquivo de token: {e}")
             
+            # Também tenta remover a pasta de sessão do Playwright
+            safe_name = "".join([c if c.isalnum() else "_" for c in profile["name"]])
+            pw_session_dir = os.path.abspath(f"playwright_sessions/{safe_name}")
+            if os.path.exists(pw_session_dir):
+                import shutil
+                try:
+                    shutil.rmtree(pw_session_dir)
+                    logger.info(f"Sessão Playwright removida: {pw_session_dir}")
+                except Exception as e:
+                    logger.warning(f"Erro ao remover sessão Playwright: {e}")
+
             self.save_profiles()
             logger.info(f"Perfil '{profile['name']}' removido.")
+            return True
+        return False
+
+    def rename_profile(self, index: int, new_name: str):
+        """Renames a profile and updates associated Playwright session folder."""
+        if 0 <= index < len(self.profiles):
+            old_profile = self.profiles[index]
+            old_name = old_profile["name"]
+            
+            # Renomeia no JSON
+            self.profiles[index]["name"] = new_name
+            
+            # Tenta renomear a pasta de sessão do Playwright para não perder o login
+            old_safe = "".join([c if c.isalnum() else "_" for c in old_name])
+            new_safe = "".join([c if c.isalnum() else "_" for c in new_name])
+            
+            if old_safe != new_safe:
+                old_pw_dir = os.path.abspath(f"playwright_sessions/{old_safe}")
+                new_pw_dir = os.path.abspath(f"playwright_sessions/{new_safe}")
+                
+                if os.path.exists(old_pw_dir):
+                    import shutil
+                    try:
+                        # Garante que a pasta pai existe
+                        os.makedirs(os.path.dirname(new_pw_dir), exist_ok=True)
+                        shutil.move(old_pw_dir, new_pw_dir)
+                        logger.info(f"Pasta de sessão Playwright movida de {old_safe} para {new_safe}")
+                    except Exception as e:
+                        logger.warning(f"Erro ao mover pasta de sessão Playwright: {e}")
+
+            self.save_profiles()
+            logger.info(f"Perfil '{old_name}' renomeado para '{new_name}'.")
             return True
         return False
 
