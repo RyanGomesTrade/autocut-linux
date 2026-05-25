@@ -177,14 +177,33 @@ class PlaywrightUploader:
             else:
                 logger.info("Definindo vídeo como PÚBLICO para visibilidade imediata.")
                 try:
+                    # Rola a página para garantir que os botões estão visíveis
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    time.sleep(1)
+                    
                     # Tenta múltiplos seletores para garantir o 'Público'
-                    page.click("tp-yt-paper-radio-button[name='PRIVACY_PUBLIC']")
-                except:
-                    try:
-                        page.click("text=Público")
-                    except:
-                        # Fallback: se não achar, deixa o padrão (que geralmente é privado ou rascunho)
-                        logger.warning("Não foi possível encontrar o botão 'Público'. O vídeo pode ficar como Rascunho ou Privado.")
+                    public_selectors = [
+                        "tp-yt-paper-radio-button[name='PRIVACY_PUBLIC']",
+                        "text='Público'",
+                        "text='Public'",
+                        "#public-radio-button"
+                    ]
+                    
+                    success_click = False
+                    for selector in public_selectors:
+                        try:
+                            if page.is_visible(selector):
+                                page.click(selector)
+                                success_click = True
+                                break
+                        except:
+                            continue
+                            
+                    if not success_click:
+                        logger.warning("Não foi possível encontrar o botão 'Público' via seletores. Tentando clique forçado no rádio.")
+                        page.locator("tp-yt-paper-radio-button").nth(2).click() # Geralmente o terceiro é o Público
+                except Exception as e:
+                    logger.warning(f"Erro ao selecionar visibilidade: {e}")
             
             # 5. Salvar / Publicar
             logger.info("Finalizando upload...")

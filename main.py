@@ -637,6 +637,14 @@ def run_pipeline(args: argparse.Namespace) -> int:
         subtitle_style = getattr(args, 'subtitle_style', 'high_impact')
         if getattr(args, 'soft_subtitles', False): subtitle_style = "soft"
 
+    # --- Auto-Detecção de Preset (IA) ---
+    selected_preset = args.preset
+    if selected_preset == "auto_detect":
+        from cutter import auto_select_preset
+        logger.info("🤖 Iniciando detecção automática de preset via MediaPipe...")
+        selected_preset = auto_select_preset(args.input)
+        logger.info(f"🤖 Preset selecionado pela IA: '{selected_preset}'")
+
     processing_results = []
 
     for i, cut in enumerate(selected_cuts, 1):
@@ -693,7 +701,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             end=cut_end,
             srt_path=srt_path,
             video_info=video_info,
-            preset=args.preset,
+            preset=selected_preset,
             subtitle_style=subtitle_style,
             cut_name=cut_name,
             visual_filter=getattr(args, 'visual_filter', 'none'),

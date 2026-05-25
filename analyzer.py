@@ -19,26 +19,28 @@ logger = logging.getLogger("viral_cutter.analyzer")
 # PROMPT PRINCIPAL DO SISTEMA
 # ─────────────────────────────────────────────────────────────────────────────
 
-VIRAL_ANALYSIS_SYSTEM_PROMPT = """Você é um editor de vídeos curtos.
-Sua tarefa é encontrar trechos de 20 a 60 segundos com alto potencial viral.
-Receba a transcrição com [start - end] e retorne APENAS um JSON.
+VIRAL_ANALYSIS_SYSTEM_PROMPT = """Você é um editor de vídeos curtos especializado em retenção e viralização.
+Sua tarefa é encontrar trechos de 20 a 60 segundos com altíssimo potencial de retenção.
 
-REGRAS:
-- Identifique momentos emocionantes, polêmicos ou informativos.
-- Formato JSON estrito:
+REGRAS CRÍTICAS DE RETENÇÃO:
+1. O GANCHO (HOOK) É TUDO: Os primeiros 3 segundos do corte DEVEM conter uma frase de impacto, uma pergunta instigante ou uma afirmação polêmica.
+2. Identifique momentos emocionantes, polêmicos ou informativos.
+3. STORYTELLING: Priorize trechos com início (gancho), meio e fim.
+
+Formato JSON estrito:
 [
   {
     "start": 0.0,
     "end": 0.0,
     "duration": 0.0,
     "viral_score": 0,
-    "hook": "gancho",
+    "hook": "gancho de impacto dos primeiros 3s",
     "summary": "resumo",
-    "motivo": "motivo",
+    "motivo": "por que isso vai viralizar",
     "theme": "tema sugerido (ex: motivational, dramatic, funny, fast-paced)"
   }
 ]
-- RESPONDA APENAS O JSON, SEM MARKDOWN."""
+- RESPONDA APENAS O JSON, SEM MARKDOWN OU COMENTÁRIOS."""
 
 
 @dataclass
@@ -332,67 +334,96 @@ Analise o trecho acima e retorne APENAS o JSON com os cortes virais identificado
 
 class HeuristicAnalyzer:
     """
-    Motor de análise simplificado que não usa IA. 
-    Baseia-se em palavras-chave e densidade de fala.
+    Motor de análise avançado baseado em padrões linguísticos e heurísticas de retenção.
+    Ideal para processamento ultra-rápido ou quando não há acesso ao Ollama.
     """
     def __init__(self, top_n: int = 10):
         self.top_n = top_n
-        self.viral_keywords = [
-            "incrível", "segredo", "olha só", "revelação", "absurdo", "mentira",
-            "verdade", "sempre", "nunca", "choque", "surpresa", "importante",
-            "atenção", "descobri", "erro", "ganhei", "perdi", "mudou", "vencer",
-            "dica", "estratégia", "sucesso", "falhou", "loucura"
+        
+        # Categorias de palavras-chave para scoring diferenciado
+        self.keywords = {
+            "polêmica": ["absurdo", "mentira", "errado", "ridículo", "pare", "chega", "odeio", "vergonha", "farsa"],
+            "curiosidade": ["segredo", "revelado", "escondido", "finalmente", "descobri", "sabia", "olha", "veja", "escuta"],
+            "sucesso_dinheiro": ["rico", "milhão", "ganhar", "lucro", "sucesso", "estratégia", "vencer", "bilhão", "investir"],
+            "impacto": ["incrível", "choque", "surpresa", "loucura", "mudou", "transformou", "impossível", "nunca", "sempre"],
+            "urgência": ["agora", "hoje", "rápido", "urgente", "pare", "atenção", "importante", "cuidado"]
+        }
+        
+        # Gatilhos de início de frase (Hooks heurísticos)
+        self.hook_triggers = [
+            "você sabia", "o grande erro", "muita gente", "o segredo para", "pare de", 
+            "eu vou te contar", "a verdade sobre", "nunca faça", "sempre que"
         ]
 
     def analyze(self, transcript_segments: list) -> list[ViralCut]:
         """
-        Gera cortes baseados em heurísticas simples.
+        Gera cortes baseados em padrões de retenção sem usar IA.
         """
-        logger.info("Iniciando análise heurística (sem IA)...")
+        logger.info("Iniciando análise heurística avançada...")
         cuts = []
         
-        # Agrupa segmentos em blocos de ~45 segundos
-        current_start = 0.0
         if not transcript_segments:
             return []
             
         total_duration = transcript_segments[-1].end
-        step = 40.0 # segundos
+        window_size = 45.0  # Janela de análise
+        step = 25.0         # Deslocamento (overlap alto para não perder o hook)
         
-        for start in range(0, int(total_duration), int(step)):
-            end = start + 50.0 # um pouco de overlap
+        for start_t in range(0, int(total_duration), int(step)):
+            end_t = start_t + window_size
             
-            # Filtra segmentos nesse intervalo
-            segs = [s for s in transcript_segments if s.start >= start and s.end <= end]
-            if not segs:
-                continue
+            # 1. Filtra segmentos na janela
+            segs = [s for s in transcript_segments if s.start >= start_t and s.end <= end_t]
+            if not segs: continue
                 
             text = " ".join(s.text.lower() for s in segs)
-            
-            # Calcula score básico
-            score = 40.0
-            hits = sum(2 for kw in self.viral_keywords if kw in text)
-            score += min(hits * 5, 40)
-            
-            # Penaliza se tiver pouco texto (silêncio)
-            if len(text.split()) < 20:
-                score -= 20
-                
-            # Tenta gerar um hook melhor baseado no início do texto
             words = text.split()
-            hook_text = " ".join(words[:8]).capitalize() + "..." if len(words) > 0 else "Trecho interessante"
+            if len(words) < 25: continue # Muito pouco conteúdo
+            
+            # 2. Scoring por Palavras-Chave (Power Words)
+            score = 35.0 # Base inicial
+            for category, kws in self.keywords.items():
+                hits = sum(1 for kw in kws if kw in text)
+                score += min(hits * 6, 30) # Máximo 30 pontos por categoria
+                
+            # 3. Análise de Pontuação (Entusiasmo/Interação)
+            # Whisper costuma colocar pontuação. Muitos ? ou ! indicam energia.
+            energy_hits = text.count("?") + text.count("!")
+            score += min(energy_hits * 5, 20)
+            
+            # 4. Detecção de Hooks (Gatilhos de Início)
+            # Se o primeiro segmento do bloco contiver um gatilho, ganha bônus.
+            first_text = segs[0].text.lower()
+            if any(trigger in first_text for trigger in self.hook_triggers):
+                score += 25
+                logger.debug(f"Hook heurístico detectado em {start_t:.1f}s")
+
+            # 5. Speech Rate (Velocidade de Fala)
+            # Ideal para retenção: entre 130 e 160 palavras por minuto (2.1 a 2.6 palavras/s)
+            duration = segs[-1].end - segs[0].start
+            wps = len(words) / duration if duration > 0 else 0
+            if 2.0 <= wps <= 3.0:
+                score += 10 # Ritmo bom
+            elif wps > 4.0:
+                score -= 10 # Rápido demais (ruído?)
+
+            # 6. Gerador de Título/Hook Heurístico
+            # Pega a primeira frase ou as primeiras 8 palavras
+            hook_candidate = segs[0].text.strip()
+            if len(hook_candidate.split()) > 10:
+                hook_candidate = " ".join(hook_candidate.split()[:10]) + "..."
 
             cuts.append(ViralCut(
-                start=float(start),
-                end=float(end),
-                duration=float(end - start),
-                viral_score=score,
-                hook=hook_text,
+                start=float(segs[0].start),
+                end=float(segs[-1].end),
+                duration=float(segs[-1].end - segs[0].start),
+                viral_score=clamp(score, 0, 100),
+                hook=hook_candidate,
                 summary=text[:100] + "...",
-                motivo="Detectado via densidade de palavras e palavras-chave."
+                motivo=f"Padrão heurístico (WPS: {wps:.1f}, Energy: {energy_hits})"
             ))
             
-        logger.info(f"Análise heurística gerou {len(cuts)} candidatos.")
+        logger.info(f"Análise heurística gerou {len(cuts)} candidatos potenciais.")
         return cuts
 
 

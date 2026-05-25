@@ -784,3 +784,53 @@ def add_background_music(
     except Exception as e:
         logger.error(f"Erro ao adicionar música: {e}")
         return False
+
+
+def auto_select_preset(video_path: str) -> str:
+    """
+    Detecta automaticamente o melhor preset com base nas dimensões do vídeo
+    e na presença de rostos (usando OpenCV).
+    """
+    try:
+        from utils import get_video_info
+        info = get_video_info(video_path)
+        w = info.get("width", 1920)
+        h = info.get("height", 1080)
+        
+        # 1. Se o vídeo já for nativamente vertical, mantém vertical limpo
+        if h > w:
+            return "tiktok"
+            
+        # 2. Se for horizontal, analisa se é um podcast com múltiplos participantes
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_path))
+            if cap.isOpened():
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                face_cascade = cv2.CascadeClassifier(cascade_path)
+                
+                # Amostra 3 frames no decorrer do vídeo
+                max_faces = 0
+                for ratio in [0.25, 0.50, 0.75]:
+                    frame_pos = int(frame_count * ratio)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    faces = face_cascade.detectMultiScale(gray, 1.1, 4, minSize=(40, 40))
+                    max_faces = max(max_faces, len(faces))
+                
+                cap.release()
+                if max_faces >= 2:
+                    logger.info(f"🤖 Detectados {max_faces} rostos. Selecionando preset 'podcast_split'.")
+                    return "podcast_split"
+        except Exception as face_err:
+            logger.warning(f"Falha ao analisar rostos para preset: {face_err}")
+            
+        # 3. Caso padrão para vídeo horizontal ser convertido para vertical de shorts
+        return "shorts_blur"
+    except Exception as e:
+        logger.warning(f"Erro na autodetecção de preset: {e}. Usando 'shorts_blur' como fallback.")
+        return "shorts_blur"

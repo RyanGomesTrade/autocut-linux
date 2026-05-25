@@ -93,8 +93,19 @@ class PipelineWorker(QThread):
                     self.status_signal.emit("Iniciando upload automático...")
                     use_playwright = self.config_dict.get("use_playwright", False)
                     
-                    for cut in results:
+                    interval = self.config_dict.get("upload_interval_min", 0)
+                    
+                    for idx, cut in enumerate(results):
                         if cut.get("success") and cut.get("file"):
+                            # Se não for o primeiro vídeo e houver intervalo, espera
+                            if idx > 0 and interval > 0:
+                                self.log_signal.emit(f"⏳ Aguardando {interval} minutos para o próximo upload...")
+                                for m in range(interval, 0, -1):
+                                    self.status_signal.emit(f"Próximo post em {m} min...")
+                                    for _ in range(60): # espera 60 segundos (1 min)
+                                        time.sleep(1)
+                                        if not self._is_running: return
+
                             file_path = cut["file"]
                             if not os.path.isabs(file_path):
                                 file_path = os.path.join(args.output, file_path)
@@ -103,7 +114,7 @@ class PipelineWorker(QThread):
                             description = ""
                             
                             if use_playwright:
-                                # Obtém o nome do perfil selecionado para separar as sessões
+                                # ... (resto do código de upload) ...
                                 profile_name = "default"
                                 try:
                                     import json
@@ -117,19 +128,18 @@ class PipelineWorker(QThread):
                                 except:
                                     pass
 
-                                self.log_signal.emit(f"🚀 [PLAYWRIGHT] Perfil ativo: {profile_name}")
+                                self.log_signal.emit(f"🚀 [PLAYWRIGHT] Perfil: {profile_name} | Enviando: {os.path.basename(file_path)}")
                                 try:
                                     pw_uploader = PlaywrightUploader(profile_name=profile_name)
                                     pw_uploader.upload_video(file_path, title, description)
                                     pw_uploader.close()
-                                    self.log_signal.emit(f"✅ Upload concluído em: {profile_name}")
+                                    self.log_signal.emit(f"✅ Upload concluído!")
                                 except Exception as e:
                                     self.log_signal.emit(f"❌ Erro no upload Playwright: {e}")
                             else:
                                 self.log_signal.emit(f"📤 Upload via API: {title}")
                                 try:
                                     yt_uploader = YouTubeUploader()
-                                    # Usa o perfil selecionado
                                     yt_uploader.authenticate(self.config_dict.get("youtube_profile_index", 0))
                                     yt_uploader.upload_video(file_path, title, description, privacy_status="public")
                                     self.log_signal.emit(f"✅ Upload concluído!")

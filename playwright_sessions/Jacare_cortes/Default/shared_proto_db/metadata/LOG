@@ -1,2 +1,3 @@
-2026/05/16-15:06:02.552 1eaba Creating DB /home/gomes/Projetos /autocut-linux/playwright_sessions/Jacare_cortes/Default/shared_proto_db/metadata since it was missing.
-2026/05/16-15:06:02.565 1eaba Reusing MANIFEST /home/gomes/Projetos /autocut-linux/playwright_sessions/Jacare_cortes/Default/shared_proto_db/metadata/MANIFEST-000001
+2026/05/24-16:39:33.067 e500 Reusing MANIFEST /home/gomes/Projetos /autocut-linux/playwright_sessions/Jacare_cortes/Default/shared_proto_db/metadata/MANIFEST-000001
+2026/05/24-16:39:33.068 e500 Recovering log #3
+2026/05/24-16:39:33.071 e500 Reusing old log /home/gomes/Projetos /autocut-linux/playwright_sessions/Jacare_cortes/Default/shared_proto_db/metadata/000003.log 

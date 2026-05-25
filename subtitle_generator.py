@@ -26,6 +26,32 @@ MAX_WORDS_PER_SUBTITLE = 8
 MIN_SUBTITLE_DURATION = 0.8
 MAX_SUBTITLE_DURATION = 5.0
 
+# ─── Configurações Dinâmicas (Estilo Viral) ──────────────────────────────────
+
+EMOJI_MAP = {
+    "dinheiro": "💰", "money": "💰", "cash": "💸", "rico": "🤑", "investir": "📈",
+    "atenção": "🚨", "cuidado": "⚠️", "perigo": "🔥", "fogo": "🔥",
+    "amor": "❤️", "feliz": "😊", "triste": "😢", "erro": "❌", "certo": "✅",
+    "tempo": "⏱️", "agora": "⏳", "segredo": "🤫", "falar": "🗣️",
+    "brasil": "🇧🇷", "mundo": "🌎", "tecnologia": "💻", "ia": "🤖",
+    "podcast": "🎙️", "sucesso": "🏆", "foco": "🎯", "ideia": "💡",
+    "meta": "🎯", "ganhar": "📈", "perder": "📉", "estudar": "📚",
+    "jesus": "🙏", "deus": "🙏", "gratidão": "🙏", "fé": "🙏",
+    "comida": "🍔", "treino": "💪", "academia": "💪", "saúde": "🍎"
+}
+
+HIGHLIGHT_COLORS = {
+    "yellow": "&H00FFFF&",
+    "green": "&H00FF00&",
+    "cyan": "&HFFFF00&",
+    "red": "&H0000FF&",
+}
+
+def get_emoji_for_word(word: str) -> str:
+    """Retorna um emoji se a palavra (limpa) estiver no mapa."""
+    clean = re.sub(r'[^\w]', '', word.lower())
+    return EMOJI_MAP.get(clean, "")
+
 
 def clean_text(text: str) -> str:
     """
@@ -243,10 +269,10 @@ def generate_ass_from_words(
     words: list,
     cut_start: float,
     cut_end: float,
-    highlight_color: str = "&H00FFFF&",
-    font_size: int = 24,
+    highlight_color: str = "&H00FFFF&", # Amarelo vibrante por padrão
+    font_size: int = 26, # Aumentado para mais impacto
 ) -> str:
-    """Gera conteúdo ASS com destaque dinâmico na palavra falada."""
+    """Gera conteúdo ASS com destaque dinâmico (estilo viral/Hormozi)."""
     relevant_words = [
         w for w in words
         if w.get("start", 0) >= cut_start - 0.2
@@ -256,6 +282,7 @@ def generate_ass_from_words(
     if not relevant_words:
         return ""
 
+    # Header com estilo mais agressivo (Shadow e Outline fortes)
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -264,14 +291,13 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,4,2,20,20,300,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Style: Default,Arial,{font_size},&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,5,2,20,20,450,1
 """
+    # MarginV=450 posiciona as legendas um pouco acima da barra inferior de apps como TikTok/Reels
 
     events = []
     i = 0
+    # Agrupamos menos palavras por evento para manter o dinamismo alto
     words_per_event = 3
 
     while i < len(relevant_words):
@@ -279,25 +305,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not chunk:
             break
 
+        # Início e fim do bloco total das 3 palavras
+        event_start = max(0.0, chunk[0]["start"] - cut_start)
+        event_end = min(cut_end - cut_start, chunk[-1]["end"] - cut_start)
+
         for idx, focus_word in enumerate(chunk):
             w_start = max(0.0, focus_word["start"] - cut_start)
             w_end = min(cut_end - cut_start, focus_word["end"] - cut_start)
 
-            if w_end - w_start < 0.1:
-                w_end = w_start + 0.1
+            # Garante duração mínima para o frame não piscar
+            if w_end - w_start < 0.08:
+                w_end = w_start + 0.08
 
             line_parts = []
             for j, w in enumerate(chunk):
-                word_text = w.get("word", "")
+                word_text = w.get("word", "").strip().upper()
                 if isinstance(word_text, bytes):
                     word_text = word_text.decode("utf-8", errors="replace")
-                word_text = word_text.strip().upper()
+                
+                emoji = get_emoji_for_word(word_text)
+                display_text = f"{word_text} {emoji}".strip() if emoji else word_text
+
                 if j == idx:
+                    # Aplica cor de destaque, negrito e efeito de escala (Pop-up)
                     line_parts.append(
-                        f"{{\\c{highlight_color}\\fscx120\\fscy120"
-                        f"\\t(0,100,\\fscx125\\fscy125)}}{word_text}{{\\r}}"
+                        f"{{\\c{highlight_color}\\fscx115\\fscy115"
+                        f"\\t(0,80,\\fscx125\\fscy125)}}"
+                        f"\\b1 {display_text} \\b0"
+                        f"{{\\r}}"
                     )
                 else:
+                    # Outras palavras ficam brancas e normais
                     line_parts.append(word_text)
 
             full_line = " ".join(line_parts)

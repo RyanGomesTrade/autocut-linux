@@ -5,6 +5,7 @@ import os
 import pickle
 import logging
 import sys
+import json
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -117,12 +118,30 @@ class YouTubeSearcher:
 
     def __init__(
         self,
-        client_secrets_file: str = "client_secrets.json",
-        token_file: str = "token.pickle",
+        client_secrets_file: str = None,
+        token_file: str = None,
         region: str = "BR",
+        profile_index: int = None
     ):
-        self.client_secrets_file = client_secrets_file
-        self.token_file = token_file
+        # Se não informou arquivos mas informou index (ou não informou nada), tenta carregar do youtube_profiles.json
+        if (client_secrets_file is None or token_file is None):
+            profiles_file = "youtube_profiles.json"
+            if os.path.exists(profiles_file):
+                try:
+                    with open(profiles_file, 'r', encoding='utf-8') as f:
+                        profiles = json.load(f)
+                        idx = profile_index if profile_index is not None else 0
+                        if 0 <= idx < len(profiles):
+                            p = profiles[idx]
+                            client_secrets_file = client_secrets_file or p.get("client_secrets")
+                            token_file = token_file or p.get("token")
+                            logger.info(f"Usando perfil do YouTube: {p.get('name')}")
+                except Exception as e:
+                    logger.error(f"Erro ao carregar perfis para busca: {e}")
+
+        # Fallback para nomes padrão se ainda estiverem nulos
+        self.client_secrets_file = client_secrets_file or "client_secrets.json"
+        self.token_file = token_file or "token.pickle"
         self.region = region.upper() if region.upper() in REGIONS else "BR"
         self.youtube = None
         self.authenticate()
@@ -137,16 +156,25 @@ class YouTubeSearcher:
                 creds = pickle.load(token)
         
         if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
+            try:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    raise Exception("Token inexistente ou inválido.")
+            except Exception as e:
+                logger.warning(f"Não foi possível renovar o token: {e}")
                 if not os.path.exists(self.client_secrets_file):
-                    print(f"\n[ERRO] Arquivo '{self.client_secrets_file}' não encontrado.")
-                    print("Por favor, coloque o arquivo de segredos do Google Cloud no diretório atual.")
-                    sys.exit(1)
+                    # Em vez de sys.exit(1), lançamos uma exceção que o web_app pode capturar
+                    raise FileNotFoundError(
+                        f"Arquivo '{self.client_secrets_file}' não encontrado e o token atual expirou ou é inválido. "
+                        "Por favor, coloque o arquivo client_secrets.json do Google Cloud no diretório para reautenticar."
+                    )
                 
-                flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_file, self.SCOPES)
-                creds = flow.run_local_server(port=0)
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_file, self.SCOPES)
+                    creds = flow.run_local_server(port=0)
+                except Exception as flow_err:
+                    raise Exception(f"Erro ao iniciar fluxo de autenticação: {flow_err}")
             
             with open(self.token_file, 'wb') as token:
                 pickle.dump(creds, token)
@@ -193,9 +221,12 @@ class YouTubeSearcher:
             response = request.execute()
         except Exception as e:
             if "insufficient authentication scopes" in str(e).lower() or "insufficientpermissions" in str(e).lower():
-                print("\n[ERRO] Permissões insuficientes.")
-                print("SOLUÇÃO: Apague o arquivo 'token.pickle' e execute o script novamente para autorizar.")
-                return []
+                logger.error(f"Permissões insuficientes no token '{self.token_file}'.")
+                # Lança exceção para o web_app capturar com mensagem clara
+                raise Exception(
+                    f"O token '{self.token_file}' não tem permissão para busca. "
+                    f"Por favor, apague este arquivo e tente novamente para gerar um novo token com as permissões corretas."
+                )
             else:
                 logger.error(f"Erro na busca: {e}")
                 return []
