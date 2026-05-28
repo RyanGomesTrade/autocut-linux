@@ -37,7 +37,8 @@ class YouTubeSearcher:
     
     SCOPES = [
         'https://www.googleapis.com/auth/youtube.readonly',
-        'https://www.googleapis.com/auth/youtube.upload'
+        'https://www.googleapis.com/auth/youtube.upload',
+        'https://www.googleapis.com/auth/youtube.force-ssl'
     ]
     
     # Categorias com queries em PT e EN
@@ -290,6 +291,20 @@ def save_to_list(videos: List[Dict], filename: str = "list.txt") -> int:
 
 def main():
     print("\n=== Auto List YouTube - Viral Cutter ===")
+
+    print("\n[1] Busca Simples por Nicho (Antiga)")
+    print("[2] Motor de Descoberta Viral (Funil de IA + SQLite)")
+    modo = input("\nEscolha o modo: ").strip()
+
+    if modo == "2":
+        try:
+            import discovery_engine
+            searcher = YouTubeSearcher(region="BR") # Inicia autenticação
+            discovery_engine.run_discovery(searcher.youtube)
+            print("\n✅ Busca Viral concluída. Resultados salvos em viral_engine.db")
+        except Exception as e:
+            logger.error(f"Erro ao rodar Motor Viral: {e}")
+        return
 
     # Seleção de região
     print("\nSelecione o canal de destino:")

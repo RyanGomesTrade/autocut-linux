@@ -61,6 +61,10 @@ EXPORT_PRESETS = {
         "width": 1080, "height": 1920, "fps": 30,
         "video_bitrate": "4M", "audio_bitrate": "192k", "crf": 23,
     },
+    "preview": {
+        "width": 480, "height": 854, "fps": 24,
+        "video_bitrate": "1M", "audio_bitrate": "128k", "crf": 28,
+    },
 }
 
 

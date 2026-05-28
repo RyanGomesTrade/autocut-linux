@@ -389,6 +389,30 @@ def transcribe(
     return transcribe_with_whisper(audio_path, model_size, language, device)
 
 
+def transcribe_any(
+    audio_path: str,
+    model_size: str = "medium",
+    language: Optional[str] = None,
+    device: str = "cpu",
+    backend: str = "auto",
+) -> list:
+    """
+    Função de conveniência que retorna apenas a lista de dicionários de segmentos,
+    compatível com o novo sistema de descoberta viral.
+    """
+    result = transcribe(audio_path, model_size, language, device, backend)
+    
+    # Converte TranscriptionResult para lista de dicts (formato esperado)
+    segments_list = []
+    for s in result.segments:
+        segments_list.append({
+            "start": s.start,
+            "end": s.end,
+            "text": s.text
+        })
+    return segments_list
+
+
 # ─── Utilitários ──────────────────────────────────────────────────────────────
 
 def split_transcript_into_blocks(

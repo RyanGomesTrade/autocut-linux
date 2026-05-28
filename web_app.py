@@ -9,11 +9,13 @@ import time
 import queue
 import logging
 import threading
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from flask import Flask, render_template, jsonify, request, Response
+from flask import Flask, render_template, jsonify, request, Response, send_from_directory
 
 # Imports do sistema
+import database
 from main import run_pipeline
 from downloader import download_youtube_video
 from batch_processor import BatchProcessor
@@ -506,6 +508,487 @@ def api_playwright_reset():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# ─── Nova API Operacional (Attention Operations Dashboard) ────────────────────
+
+# ─── Attention Operations Dashboard API ──────────────────────────────────────
+
+@app.route("/api/ops/dashboard", methods=["GET"])
+def api_ops_dashboard():
+    """ Resumo de alto nível do sistema """
+    try:
+        with database.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Jobs ativos (PENDING, DOWNLOADING, CUTTING, RENDERING)
+            cursor.execute("SELECT COUNT(*) FROM render_jobs WHERE status IN ('PENDING', 'DOWNLOADING', 'CUTTING', 'RENDERING')")
+            active_jobs = cursor.fetchone()[0]
+            
+            # Jobs falhados
+            cursor.execute("SELECT COUNT(*) FROM render_jobs WHERE status = 'FAILED'")
+            failed_jobs = cursor.fetchone()[0]
+            
+            # Queue size (PENDING)
+            cursor.execute("SELECT COUNT(*) FROM render_jobs WHERE status = 'PENDING'")
+            queue_size = cursor.fetchone()[0]
+            
+            # Clips renderizados (DONE)
+            cursor.execute("SELECT COUNT(*) FROM render_jobs WHERE status = 'DONE'")
+            clips_rendered = cursor.fetchone()[0]
+            
+            # Throughput (últimas 24h)
+            cursor.execute("SELECT COUNT(*) FROM render_jobs WHERE status = 'DONE' AND updated_at > datetime('now', '-1 day')")
+            throughput_24h = cursor.fetchone()[0]
+            
+            # Vídeos em tendência (score > 0.6)
+            cursor.execute("SELECT COUNT(*) FROM videos WHERE final_viral_score > 0.6")
+            trending_count = cursor.fetchone()[0]
+
+            return jsonify({
+                "active_jobs": active_jobs,
+                "failed_jobs": failed_jobs,
+                "queue_size": queue_size,
+                "clips_rendered": clips_rendered,
+                "throughput_24h": throughput_24h,
+                "trending_videos": trending_count,
+                "pipeline_status": "Discovery → Queue → Render → Upload"
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/jobs", methods=["GET"])
+def api_ops_jobs():
+    """ Lista detalhada de jobs na fila """
+    try:
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT j.*, v.title 
+                FROM render_jobs j 
+                LEFT JOIN videos v ON j.video_id = v.video_id 
+                WHERE j.status NOT IN ('CANCELLED', 'DONE')
+                ORDER BY j.created_at DESC LIMIT 50
+            """)
+            jobs = [dict(row) for row in cursor.fetchall()]
+            return jsonify(jobs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/trends", methods=["GET"])
+def api_ops_trends():
+    """ Monitor de tendências detectadas """
+    try:
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM videos 
+                WHERE final_viral_score > 0.1 
+                ORDER BY final_viral_score DESC LIMIT 30
+            """)
+            trends = [dict(row) for row in cursor.fetchall()]
+            
+            # Processar decision_trace de JSON para objeto
+            for t in trends:
+                if t.get('decision_trace'):
+                    try:
+                        t['decision_trace'] = json.loads(t['decision_trace'])
+                    except:
+                        pass
+                if t.get('raw_signals_json'):
+                    try:
+                        t['raw_signals'] = json.loads(t['raw_signals_json'])
+                    except:
+                        pass
+                        
+            return jsonify(trends)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/segments/<video_id>", methods=["GET"])
+def api_ops_segments(video_id):
+    """ Segment Inspector: Por que escolheu um segmento? """
+    try:
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Info do vídeo
+            cursor.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,))
+            video_row = cursor.fetchone()
+            video = dict(video_row) if video_row else {}
+            
+            # Segmentos
+            cursor.execute("SELECT * FROM segments WHERE video_id = ? ORDER BY total_score DESC", (video_id,))
+            segments = [dict(row) for row in cursor.fetchall()]
+            
+            # Processar features_json
+            for s in segments:
+                if s.get('features_json'):
+                    try:
+                        s['features'] = json.loads(s['features_json'])
+                    except:
+                        pass
+            
+            return jsonify({
+                "video": video,
+                "segments": segments
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/queue/add", methods=["POST"])
+def api_queue_add():
+    """
+    Adiciona um vídeo à fila de renderização (operational loop).
+    Recebe: { trend_id: "video_id" }
+    """
+    try:
+        data = request.get_json()
+        trend_id = data.get("trend_id")
+        if not trend_id:
+            return jsonify({"error": "trend_id is required"}), 400
+
+        # 1. Buscar segmentos do vídeo
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT * FROM segments WHERE video_id = ? ORDER BY total_score DESC LIMIT 10", (trend_id,))
+            segments = [dict(r) for r in cursor.fetchall()]
+
+            if not segments:
+                # Se não houver segmentos, criar um job genérico de todo o vídeo
+                job_id = database.add_render_job(
+                    video_id=trend_id,
+                    start=0.0,
+                    end=60.0,
+                    preset="tiktok",
+                    priority=1.0
+                )
+                return jsonify({
+                    "job_id": job_id,
+                    "status": "queued",
+                    "message": "Job created (full video)"
+                }), 201
+
+            # 2. Criar job para cada segmento
+            created_jobs = []
+            for seg in segments:
+                job_id = database.add_render_job(
+                    video_id=trend_id,
+                    start=seg.get("start_time"),
+                    end=seg.get("end_time"),
+                    preset="tiktok",
+                    priority=seg.get("total_score")
+                )
+                created_jobs.append(job_id)
+
+            return jsonify({
+                "jobs": created_jobs,
+                "status": "queued",
+                "message": f"{len(created_jobs)} jobs created"
+            }), 201
+
+    except Exception as e:
+        logger.error(f"Error adding to queue: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/jobs/pause", methods=["POST"])
+def api_jobs_pause():
+    """Pausa um job em execução."""
+    try:
+        data = request.get_json()
+        job_id_raw = data.get("job_id")
+        if not job_id_raw:
+            return jsonify({"error": "job_id is required"}), 400
+        job_id = int(job_id_raw.replace("job_", ""))
+        
+        database.update_job_status(job_id, "PAUSED")
+        return jsonify({"status": "paused", "job_id": job_id}), 200
+    except Exception as e:
+        logger.error(f"Error pausing job: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/jobs/cancel", methods=["POST"])
+def api_jobs_cancel():
+    """Cancela um job."""
+    try:
+        data = request.get_json()
+        job_id_raw = data.get("job_id")
+        logger.info(f"[Cancel Job] Recebido job_id_raw: {job_id_raw}")
+        if not job_id_raw:
+            return jsonify({"error": "job_id is required"}), 400
+        job_id = int(job_id_raw.replace("job_", ""))
+        logger.info(f"[Cancel Job] Job ID limpo: {job_id}")
+        
+        database.update_job_status(job_id, "CANCELLED")
+        logger.info(f"[Cancel Job] Job {job_id} atualizado para CANCELLED")
+        
+        return jsonify({"status": "cancelled", "job_id": job_id}), 200
+    except Exception as e:
+        logger.error(f"Error cancelling job: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ops/comments/<video_id>", methods=["GET"])
+def api_ops_comments(video_id):
+    """
+    Retorna sinais de comentários (timestamp mentions) e clusters temporais
+    para a explicabilidade do Segment Inspector.
+    """
+    def ts_to_seconds(ts):
+        # Suporta "MM:SS" ou "HH:MM:SS"
+        if not ts:
+            return 0.0
+        parts = str(ts).split(":")
+        try:
+            if len(parts) == 2:
+                mm = int(parts[0])
+                ss = int(parts[1])
+                return mm * 60 + ss
+            if len(parts) == 3:
+                hh = int(parts[0])
+                mm = int(parts[1])
+                ss = int(parts[2])
+                return hh * 3600 + mm * 60 + ss
+        except Exception:
+            return 0.0
+        return 0.0
+
+    def seconds_to_mmss(seconds):
+        seconds = int(seconds)
+        mm = seconds // 60
+        ss = seconds % 60
+        return f"{mm:02d}:{ss:02d}"
+
+    try:
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT timestamp_str, likes, velocity_score, repeated_mentions
+                FROM comments_signals
+                WHERE video_id = ?
+                ORDER BY repeated_mentions DESC, likes DESC
+                LIMIT 80
+            """, (video_id,))
+            signals = [dict(r) for r in cursor.fetchall()]
+
+            if not signals:
+                return jsonify({
+                    "comments_signals": [],
+                    "clusters": [],
+                    "comment_velocity_summary": {
+                        "max_velocity_score": 0,
+                        "avg_velocity_score": 0,
+                        "signal_count": 0
+                    }
+                })
+
+            max_velocity = max(float(s.get("velocity_score") or 0) for s in signals)
+            avg_velocity = sum(float(s.get("velocity_score") or 0) for s in signals) / len(signals)
+
+            # Clusters: bin de 10s (aprox.) para agrupar menções próximas
+            bin_size = 10
+            clusters_map = {}  # binStartSeconds -> cluster
+            for s in signals:
+                sec = ts_to_seconds(s.get("timestamp_str"))
+                if sec <= 0:
+                    continue
+                bin_start = (sec // bin_size) * bin_size
+                if bin_start not in clusters_map:
+                    clusters_map[bin_start] = {
+                        "bin_start_seconds": bin_start,
+                        "timestamp_cluster": seconds_to_mmss(bin_start),
+                        "repeated_mentions": 0,
+                        "likes": 0,
+                        "max_velocity_score": 0.0,
+                    }
+                c = clusters_map[bin_start]
+                c["repeated_mentions"] += int(s.get("repeated_mentions") or 0)
+                c["likes"] += int(s.get("likes") or 0)
+                c["max_velocity_score"] = max(
+                    c["max_velocity_score"],
+                    float(s.get("velocity_score") or 0),
+                )
+
+            clusters = sorted(
+                clusters_map.values(),
+                key=lambda x: x["repeated_mentions"],
+                reverse=True
+            )[:10]
+
+            return jsonify({
+                "comments_signals": signals,
+                "clusters": clusters,
+                "comment_velocity_summary": {
+                    "max_velocity_score": max_velocity,
+                    "avg_velocity_score": avg_velocity,
+                    "signal_count": len(signals)
+                }
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/metrics", methods=["GET"])
+def api_ops_metrics():
+    """ Telemetria e Performance """
+    try:
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Pegar métricas das últimas 24h
+            cursor.execute("""
+                SELECT metric_type, AVG(value) as avg_value, MAX(value) as max_value, COUNT(*) as count 
+                FROM operational_metrics 
+                WHERE timestamp > datetime('now', '-1 day')
+                GROUP BY metric_type
+            """)
+            metrics = [dict(row) for row in cursor.fetchall()]
+            return jsonify(metrics)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/clips", methods=["GET"])
+def api_ops_clips():
+    """ Feedback Loop: Performance Real vs Prevista """
+    try:
+        with database.get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT c.*, v.title 
+                FROM generated_clips c
+                JOIN videos v ON c.video_id = v.video_id
+                ORDER BY c.posted_at DESC LIMIT 50
+            """)
+            clips = [dict(row) for row in cursor.fetchall()]
+            return jsonify(clips)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/segments/update", methods=["POST"])
+def api_ops_segments_update():
+    """Atualiza timestamps, status e metadados do operador de um segmento."""
+    try:
+        req = request.json or {}
+        seg_id = req.get("id")
+        start = req.get("start")
+        end = req.get("end")
+        status = req.get("status")
+
+        operator_title = req.get("operator_title")
+        operator_hashtags = req.get("operator_hashtags")
+        operator_notes = req.get("operator_notes")
+        
+        if not seg_id:
+            return jsonify({"status": "error", "message": "ID do segmento não fornecido."}), 400
+            
+        database.update_segment(
+            seg_id,
+            start_time=start,
+            end_time=end,
+            status=status,
+            operator_title=operator_title,
+            operator_hashtags=operator_hashtags,
+            operator_notes=operator_notes,
+        )
+        return jsonify({"status": "success", "message": "Segmento atualizado!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/ops/jobs/add", methods=["POST"])
+def api_ops_jobs_add():
+    """ Adiciona um novo job de renderização """
+    try:
+        req = request.json or {}
+        video_id = req.get("video_id")
+        start = req.get("start")
+        end = req.get("end")
+        preset = req.get("preset", "tiktok")
+        priority = req.get("priority", 0.0)
+        
+        if not all([video_id, start is not None, end is not None]):
+            return jsonify({"status": "error", "message": "Dados incompletos para o job."}), 400
+            
+        job_id = database.add_render_job(video_id, start, end, preset=preset, priority=priority)
+        return jsonify({"status": "success", "job_id": job_id, "message": "Job adicionado à fila!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/ops/jobs/control", methods=["POST"])
+def api_ops_jobs_control():
+    """ Controle de jobs (cancelar, retry, etc.) """
+    try:
+        req = request.json or {}
+        job_id = req.get("job_id")
+        action = req.get("action") # cancel, retry, delete
+        
+        if not job_id or not action:
+            return jsonify({"status": "error", "message": "Job ID e ação são obrigatórios."}), 400
+            
+        if action == "cancel":
+            database.update_job_status(job_id, "CANCELLED")
+        elif action == "retry":
+            database.update_job_status(job_id, "PENDING")
+        elif action == "delete":
+            database.delete_job(job_id)
+        else:
+            return jsonify({"status": "error", "message": f"Ação '{action}' desconhecida."}), 400
+            
+        return jsonify({"status": "success", "message": f"Job {job_id}: Ação '{action}' executada!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/ops/strategy/update", methods=["POST"])
+def api_ops_strategy_update():
+    """ Atualiza thresholds de descoberta em tempo real """
+    try:
+        req = request.json or {}
+        # Aqui poderíamos atualizar o web_config.json ou uma tabela de config no banco
+        cfg = load_config()
+        for key in ["min_score", "min_duration", "max_duration", "analysis_engine"]:
+            if key in req:
+                cfg[key] = req[key]
+        
+        if save_config(cfg):
+            return jsonify({"status": "success", "message": "Estratégia atualizada!"})
+        return jsonify({"status": "error", "message": "Falha ao salvar estratégia."}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/api/ops/download/<path:filename>")
+def api_ops_download(filename):
+    """ Serve arquivos renderizados para download """
+    cfg = load_config()
+    output_dir = cfg.get("output")
+    return send_from_directory(output_dir, filename, as_attachment=True)
+
+@app.route("/api/ops/preview", methods=["POST"])
+def api_ops_preview():
+    """ Gatilho para render de preview (mini-render 480p) """
+    try:
+        req = request.json or {}
+        video_id = req.get("video_id")
+        start = req.get("start")
+        end = req.get("end")
+        
+        if not all([video_id, start is not None, end is not None]):
+            return jsonify({"status": "error", "message": "Dados incompletos para o preview."}), 400
+            
+        # Adiciona um job especial de preview
+        # Por enquanto, usamos o mesmo sistema de jobs mas com um preset 'preview'
+        job_id = database.add_render_job(video_id, start, end, preset="preview", priority=10.0)
+        return jsonify({"status": "success", "job_id": job_id, "message": "Preview solicitado!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 # ─── Stream Server-Sent Events (SSE) ──────────────────────────────────────────
 
 @app.route("/stream")
@@ -531,6 +1014,265 @@ def stream_logs():
             yield f"data: {json.dumps({'type': 'status', 'msg': progress_data['status'], 'percent': progress_data['percent'], 'active_task': progress_data['active_task']})}\n\n"
             
             time.sleep(1)
+
+    return Response(event_stream(), mimetype="text/event-stream")
+
+# ─── Attention OS Extended SSE (events stream) ─────────────────────────────
+
+def _safe_json_loads(maybe_json):
+    if maybe_json is None:
+        return None
+    if isinstance(maybe_json, (dict, list)):
+        return maybe_json
+    try:
+        return json.loads(maybe_json)
+    except Exception:
+        return None
+
+
+def _iso_utc_epoch():
+    return "1970-01-01T00:00:00+00:00"
+
+
+@app.route("/stream/events")
+def stream_events():
+    """
+    SSE estendido: empurra snapshot inicial + eventos granulares.
+
+    FASE 1 (sem WebSockets): monitora o SQLite por "watermarks" em timestamps
+    para detectar mudanças sem bidirecionalidade.
+    """
+
+    def event_stream():
+        # Watermarks (por conexão) para evitar reenviar eventos
+        last_job_updated_at = _iso_utc_epoch()
+        last_job_created_at = _iso_utc_epoch()
+        last_video_last_scanned = _iso_utc_epoch()
+        last_segment_updated_at = _iso_utc_epoch()
+        last_metric_timestamp = _iso_utc_epoch()
+
+        last_heartbeat = 0.0
+
+        def emit(event_type, id_val=None, payload=None, patch=None):
+            msg = {
+                "type": event_type,
+                "timestamp": time.time(),
+            }
+            if id_val is not None:
+                msg["id"] = id_val
+            if payload is not None:
+                msg["payload"] = payload
+            if patch is not None:
+                msg["patch"] = patch
+            return f"data: {json.dumps(msg)}\n\n"
+
+        # Loop principal
+        while True:
+            try:
+                now = time.time()
+                if now - last_heartbeat >= 10.0:
+                    last_heartbeat = now
+                    yield emit("WORKER_HEARTBEAT", id_val="system_worker", patch={"status": "active", "load": 0.0})
+
+                with database.get_connection() as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+
+                    # ── Jobs (render_jobs) ──
+                    cur.execute("""
+                        SELECT *
+                        FROM render_jobs
+                        WHERE updated_at > ?
+                        ORDER BY updated_at ASC
+                        LIMIT 200
+                    """, (last_job_updated_at,))
+                    job_rows = cur.fetchall()
+
+                    if job_rows:
+                        for r in job_rows:
+                            job_id = f"job_{r['job_id']}"
+                            created_at = r["created_at"] or _iso_utc_epoch()
+                            updated_at = r["updated_at"] or _iso_utc_epoch()
+                            status = r["status"]
+
+                            payload = dict(r)
+                            if payload.get("metrics_json"):
+                                payload["metrics"] = _safe_json_loads(payload.get("metrics_json"))
+
+                            # 1) Creation
+                            if created_at > last_job_created_at:
+                                yield emit(
+                                    "JOB_QUEUED",
+                                    id_val=job_id,
+                                    payload={
+                                        "video_id": r.get("video_id"),
+                                        "start_time": r.get("start_time"),
+                                        "end_time": r.get("end_time"),
+                                        "preset": r.get("preset"),
+                                        "priority": r.get("priority_score"),
+                                        "status": status,
+                                        "created_at": created_at
+                                    }
+                                )
+                                last_job_created_at = max(last_job_created_at, created_at)
+
+                            # 2) Status Updates (Patch-only) — apenas para jobs já existentes
+                            else:
+                                et = "JOB_PROGRESS"
+                                if status == "DONE":
+                                    et = "JOB_COMPLETED"
+                                elif status == "FAILED":
+                                    et = "JOB_ERROR"
+                                    yield emit(
+                                        "ALERT_TRIGGERED",
+                                        id_val=f"alert_{job_id}",
+                                        payload={
+                                            "level": "error",
+                                            "message": f"Job {job_id} failed: {r.get('error_log')}",
+                                            "job_id": job_id
+                                        }
+                                    )
+                                elif status == "PAUSED":
+                                    et = "JOB_PAUSED"
+                                elif status == "CANCELLED":
+                                    et = "JOB_CANCELLED"
+
+                                yield emit(
+                                    et,
+                                    id_val=job_id,
+                                    patch={
+                                        "status": status.lower(),
+                                        "output_path": r.get("output_path"),
+                                        "error_log": r.get("error_log"),
+                                        "metrics": payload.get("metrics")
+                                    }
+                                )
+
+                        # Avança watermark (máximo updated_at enviado)
+                        last_job_updated_at = max(
+                            r["updated_at"] or last_job_updated_at for r in job_rows
+                        )
+
+                    # ── Trends (videos) ──
+                    cur.execute("""
+                        SELECT *
+                        FROM videos
+                        WHERE last_scanned > ?
+                          AND final_viral_score > 0.1
+                        ORDER BY last_scanned ASC
+                        LIMIT 100
+                    """, (last_video_last_scanned,))
+                    video_rows = cur.fetchall()
+
+                    if video_rows:
+                        for r in video_rows:
+                            t = dict(r)
+                            video_id = f"trend_{t.get('video_id')}"
+                            last_scanned = t.get("last_scanned") or _iso_utc_epoch()
+                            
+                            yield emit(
+                                "TREND_CREATED",
+                                id_val=video_id,
+                                payload={
+                                    "title": t.get("title"),
+                                    "url": t.get("url"),
+                                    "score": t.get("final_viral_score"),
+                                    "relative_vph": t.get("relative_vph"),
+                                    "vph_acceleration": t.get("vph_acceleration"),
+                                    "last_scanned": last_scanned,
+                                }
+                            )
+
+                        last_video_last_scanned = max(
+                            r["last_scanned"] or last_video_last_scanned for r in video_rows
+                        )
+
+                    # ── Segments (segments) ──
+                    cur.execute("""
+                        SELECT *
+                        FROM segments
+                        WHERE updated_at > ?
+                        ORDER BY updated_at ASC
+                        LIMIT 200
+                    """, (last_segment_updated_at,))
+                    seg_rows = cur.fetchall()
+
+                    if seg_rows:
+                        for r in seg_rows:
+                            s = dict(r)
+                            updated_at = s.get("updated_at") or _iso_utc_epoch()
+                            if s.get("features_json"):
+                                s["features"] = _safe_json_loads(s.get("features_json"))
+
+                            status = s.get("status")
+                            if status == "APPROVED":
+                                et = "SEGMENT_APPROVED"
+                            elif status == "REJECTED":
+                                et = "SEGMENT_REJECTED"
+                            else:
+                                et = "SEGMENT_UPDATED"
+
+                            yield emit(
+                                et,
+                                id_val=f"seg_{s.get('id')}",
+                                payload={
+                                    "video_id": s.get("video_id"),
+                                    "start_time": s.get("start_time"),
+                                    "end_time": s.get("end_time"),
+                                    "total_score": s.get("total_score"),
+                                    "status": status,
+                                    "hook_score": s.get("hook_score"),
+                                    "controversy_score": s.get("controversy_score"),
+                                    "emotion_score": s.get("emotion_score"),
+                                    "authority_score": s.get("authority_score"),
+                                    "features": s.get("features"),
+                                    "updated_at": updated_at,
+                                }
+                            )
+
+                        last_segment_updated_at = max(
+                            r["updated_at"] or last_segment_updated_at for r in seg_rows
+                        )
+
+                    # ── Operational metrics ──
+                    cur.execute("""
+                        SELECT metric_type, value, tags, timestamp
+                        FROM operational_metrics
+                        WHERE timestamp > ?
+                        ORDER BY timestamp ASC
+                        LIMIT 200
+                    """, (last_metric_timestamp,))
+                    metric_rows = cur.fetchall()
+
+                    if metric_rows:
+                        for r in metric_rows:
+                            ts = r["timestamp"] or _iso_utc_epoch()
+                            yield emit(
+                                "TELEMETRY_UPDATE",
+                                id_val=f"metric_{r.get('metric_type')}",
+                                payload={
+                                    "metric_type": r["metric_type"],
+                                    "value": r["value"],
+                                    "tags": _safe_json_loads(r["tags"]),
+                                    "timestamp": ts,
+                                }
+                            )
+
+                        last_metric_timestamp = max(
+                            r["timestamp"] or last_metric_timestamp for r in metric_rows
+                        )
+
+            except GeneratorExit:
+                break
+            except sqlite3.OperationalError as e:
+                yield f"data: {json.dumps({'type':'SQLITE_LOCK','ts':time.time(),'error':str(e)})}\n\n"
+                time.sleep(1.0)
+            except Exception as e:
+                yield emit("STREAM_ERROR", payload={"error": str(e)})
+                time.sleep(1.0)
+
+            # descanso entre iterações
+            time.sleep(1.0)
 
     return Response(event_stream(), mimetype="text/event-stream")
 
