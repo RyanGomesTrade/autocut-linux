@@ -134,6 +134,9 @@ def init_db():
             output_path TEXT,
             error_log TEXT,
             metrics_json TEXT,
+            upload_status TEXT DEFAULT 'PENDING',
+            uploaded_video_id TEXT,
+            upload_error TEXT,
             expires_at TIMESTAMP,
             created_at TIMESTAMP,
             updated_at TIMESTAMP,
@@ -159,6 +162,14 @@ def init_db():
         cursor.execute("ALTER TABLE render_jobs ADD COLUMN priority_score REAL DEFAULT 0.0")
         cursor.execute("ALTER TABLE render_jobs ADD COLUMN expires_at TIMESTAMP")
         cursor.execute("ALTER TABLE render_jobs ADD COLUMN metrics_json TEXT")
+    except sqlite3.OperationalError:
+        pass
+    
+    # Migração para campos de upload
+    try:
+        cursor.execute("ALTER TABLE render_jobs ADD COLUMN upload_status TEXT DEFAULT 'PENDING'")
+        cursor.execute("ALTER TABLE render_jobs ADD COLUMN uploaded_video_id TEXT")
+        cursor.execute("ALTER TABLE render_jobs ADD COLUMN upload_error TEXT")
     except sqlite3.OperationalError:
         pass
     
@@ -259,6 +270,31 @@ def update_job_status(job_id, status, output_path=None, error_log=None, metrics=
             SET status = ?, output_path = ?, error_log = ?, metrics_json = ?, updated_at = ?
             WHERE job_id = ?
         ''', (status, output_path, error_log, metrics_json, now, job_id))
+        conn.commit()
+
+def get_jobs_to_upload():
+    """Retorna jobs que estão DONE e ainda não foram enviados para upload."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM render_jobs 
+            WHERE status = 'DONE' 
+            AND upload_status = 'PENDING' 
+            AND output_path IS NOT NULL
+            ORDER BY updated_at ASC
+        """)
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+def update_upload_status(job_id, upload_status, uploaded_video_id=None, upload_error=None):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        cursor.execute('''
+            UPDATE render_jobs 
+            SET upload_status = ?, uploaded_video_id = ?, upload_error = ?, updated_at = ?
+            WHERE job_id = ?
+        ''', (upload_status, uploaded_video_id, upload_error, now, job_id))
         conn.commit()
 
 def log_operational_metric(metric_type, value, tags=None):

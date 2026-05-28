@@ -34,3 +34,7 @@ batch_progress.json
 !cuts_raw.json
 *.pickle
 playwright_sessions/
+browser_profiles/
+viral_engine.db
+viral_engine.db-shm
+viral_engine.db-wal

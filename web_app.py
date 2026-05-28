@@ -1111,6 +1111,9 @@ def stream_events():
                                         "preset": r.get("preset"),
                                         "priority": r.get("priority_score"),
                                         "status": status,
+                                        "upload_status": r.get("upload_status"),
+                                        "uploaded_video_id": r.get("uploaded_video_id"),
+                                        "upload_error": r.get("upload_error"),
                                         "created_at": created_at
                                     }
                                 )
@@ -1137,16 +1140,32 @@ def stream_events():
                                 elif status == "CANCELLED":
                                     et = "JOB_CANCELLED"
 
-                                yield emit(
-                                    et,
-                                    id_val=job_id,
-                                    patch={
-                                        "status": status.lower(),
-                                        "output_path": r.get("output_path"),
-                                        "error_log": r.get("error_log"),
-                                        "metrics": payload.get("metrics")
-                                    }
-                                )
+                                # Adiciona campos de upload ao patch
+                                upload_status = r.get("upload_status")
+                                patch_data = {
+                                    "status": status.lower(),
+                                    "output_path": r.get("output_path"),
+                                    "error_log": r.get("error_log"),
+                                    "metrics": payload.get("metrics"),
+                                    "upload_status": upload_status,
+                                    "uploaded_video_id": r.get("uploaded_video_id"),
+                                    "upload_error": r.get("upload_error"),
+                                }
+
+                                # Emitir eventos específicos de upload, se houver mudança
+                                if upload_status == "UPLOADING":
+                                    yield emit("JOB_UPLOADING", id_val=job_id, patch=patch_data)
+                                elif upload_status == "UPLOADED":
+                                    yield emit("JOB_UPLOADED", id_val=job_id, patch=patch_data)
+                                elif upload_status == "FAILED":
+                                    yield emit("ALERT_TRIGGERED", id_val=f"alert_{job_id}", payload={
+                                        "level": "warning",
+                                        "message": f"Job {job_id} upload failed: {r.get('upload_error')}",
+                                        "job_id": job_id
+                                    })
+
+                                # Sempre emitir o evento principal
+                                yield emit(et, id_val=job_id, patch=patch_data)
 
                         # Avança watermark (máximo updated_at enviado)
                         last_job_updated_at = max(
