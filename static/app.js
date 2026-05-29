@@ -13,6 +13,14 @@ function _getAttentionOS() {
     return window.__AttentionOS || {};
 }
 
+// --- Funções Globais (Hoisting) para evitar ReferenceError ---
+let loadSystemConfig, saveSystemConfig, toggleOllamaFields, toggleWatermarkFields, 
+    loadYoutubeProfiles, startTask, startSSE, updateProgress, log, clearLog, 
+    syncBatchMeta, addBatchRow, renumberBatchRows, getBatchJobs, setRowStatus, 
+    loadBatchQueue, syncBatchProfileSelects, loadNicheCategories, loadResultsGallery,
+    loadStrategyParams;
+let switchSettingsTab;
+
 document.addEventListener("DOMContentLoaded", () => {
     // ── Tab Manager ────────────────────────────────────────────────────────
     const navBtns = Array.from(document.querySelectorAll('.nav-btn[data-tab]'));
@@ -20,6 +28,27 @@ document.addEventListener("DOMContentLoaded", () => {
         const tabId = btn.getAttribute('data-tab');
         switchTab(tabId);
     }));
+
+    // ── Settings Sub-Tab Manager ──────────────────────────────────────────
+    const setNavBtns = document.querySelectorAll('.set-nav-btn');
+    setNavBtns.forEach(btn => btn.addEventListener('click', () => {
+        const setName = btn.getAttribute('data-set');
+        switchSettingsTab(setName);
+    }));
+
+    switchSettingsTab = function(setName) {
+        console.log(`[Settings] Trocando para sub-aba: ${setName}`);
+        document.querySelectorAll('.set-nav-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.set-section').forEach(s => s.classList.remove('active'));
+        
+        const targetBtn = document.querySelector(`.set-nav-btn[data-set="${setName}"]`);
+        const targetSec = document.getElementById(`set-sec-${setName}`);
+        
+        if (targetBtn) targetBtn.classList.add('active');
+        if (targetSec) targetSec.classList.add('active');
+
+        if (setName === 'canais') loadYoutubeProfiles();
+    };
 
     // Event Delegation Global para botões dinâmicos
     document.addEventListener("click", async (e) => {
@@ -147,73 +176,119 @@ document.addEventListener("DOMContentLoaded", () => {
     tick();
 
     // ── Config load / save ─────────────────────────────────────────────────
-    async function loadSystemConfig() {
+    loadSystemConfig = async function() {
         try {
             const cfg = await fetch("/api/config").then(r => r.json());
             const g = id => document.getElementById(id);
+            const setRadio = (name, val) => {
+                const el = document.querySelector(`input[name="${name}"][value="${val}"]`);
+                if (el) el.checked = true;
+            };
 
             if (g("inputVideoPath")) g("inputVideoPath").value     = cfg.input || "";
             if (g("selectPreset")) g("selectPreset").value       = cfg.preset || "auto_detect";
             if (g("checkUploadYoutube")) g("checkUploadYoutube").checked = cfg.upload_youtube || false;
             if (g("checkUsePlaywright")) g("checkUsePlaywright").checked = cfg.use_playwright || false;
 
-            if (g("selectWhisperModel")) g("selectWhisperModel").value   = cfg.whisper_model || "medium";
-            if (g("selectDevice")) g("selectDevice").value         = cfg.device || "cpu";
-            if (g("selectAnalysisEngine")) g("selectAnalysisEngine").value = cfg.analysis_engine || "heuristic";
+            // IA & Modelos (Radios)
+            setRadio("whisper_model", cfg.whisper_model || "medium");
+            setRadio("device", cfg.device || "cpu");
+            setRadio("engine", cfg.analysis_engine || "heuristic");
             if (g("inputOllamaModel")) g("inputOllamaModel").value     = cfg.model || "llama3";
 
-            if (g("inputTopN")) g("inputTopN").value        = cfg.top_n || 10;
-            if (g("inputMinScore")) g("inputMinScore").value    = cfg.min_score || 40;
+            // Cortes & Viral
+            if (g("inputTopN")) g("inputTopN").value = cfg.top_n || 10;
+            if (g("inputMinScore")) {
+                g("inputMinScore").value = cfg.min_score || 40;
+                if (g("valMinScore")) g("valMinScore").textContent = cfg.min_score || 40;
+            }
+            
             if (g("inputMinDuration")) g("inputMinDuration").value = cfg.min_duration || 20;
             if (g("inputMaxDuration")) g("inputMaxDuration").value = cfg.max_duration || 65;
             if (g("checkAutoFrame")) g("checkAutoFrame").checked = cfg.auto_frame || false;
 
-            if (g("selectWatermarkMode")) g("selectWatermarkMode").value     = cfg.watermark_mode || "none";
+            // Branding (Radios)
+            setRadio("wm_mode", cfg.watermark_mode || "none");
+            setRadio("wm_pos", cfg.watermark_position || "bottom_right");
+            
             if (g("inputWatermarkText")) g("inputWatermarkText").value      = cfg.watermark_text || "";
             if (g("inputWatermarkImage")) g("inputWatermarkImage").value     = cfg.watermark_image || "";
-            if (g("selectWatermarkPosition")) g("selectWatermarkPosition").value = cfg.watermark_position || "bottom_right";
 
             if (g("selectSubtitleStyle")) g("selectSubtitleStyle").value = cfg.subtitle_style || "high_impact";
             if (g("selectVisualFilter")) g("selectVisualFilter").value  = cfg.visual_filter || "none";
             if (g("inputBgMusic")) g("inputBgMusic").value        = cfg.bg_music || "";
-            if (g("inputBgMusicVolume")) g("inputBgMusicVolume").value  = cfg.bg_music_volume || 0.15;
+            if (g("inputBgMusicVolume")) {
+                g("inputBgMusicVolume").value = cfg.bg_music_volume || 0.15;
+                if (g("valBgMusicVolume")) g("valBgMusicVolume").textContent = Math.round((cfg.bg_music_volume || 0.15) * 100) + "%";
+            }
 
-            toggleOllamaFields();
-            toggleWatermarkFields();
             await loadYoutubeProfiles(cfg.youtube_profile_index);
         } catch (e) {
             log(`[ERRO] Falha ao ler configurações: ${e.message}`, "log-err");
         }
     }
+    
+    // Alias para compatibilidade com o trigger da aba Branding
+    loadStrategyParams = loadSystemConfig;
 
-    async function saveSystemConfig(silent = false) {
-        const v = id => { const el = document.getElementById(id); return el ? el.value : ""; };
-        const c = id => { const el = document.getElementById(id); return el ? el.checked : false; };
-        const config = {
-            input: v("inputVideoPath"),
-            preset: v("selectPreset"),
-            upload_youtube: c("checkUploadYoutube"),
-            use_playwright: c("checkUsePlaywright"),
-            youtube_profile_index: parseInt(v("selectYtProfile") || 0),
-            whisper_model: v("selectWhisperModel"),
-            device: v("selectDevice"),
-            analysis_engine: v("selectAnalysisEngine"),
-            model: v("inputOllamaModel"),
-            top_n: parseInt(v("inputTopN")),
-            min_score: parseFloat(v("inputMinScore")),
-            min_duration: parseFloat(v("inputMinDuration")),
-            max_duration: parseFloat(v("inputMaxDuration")),
-            auto_frame: c("checkAutoFrame"),
-            watermark_mode: v("selectWatermarkMode"),
-            watermark_text: v("inputWatermarkText"),
-            watermark_image: v("inputWatermarkImage"),
-            watermark_position: v("selectWatermarkPosition"),
-            subtitle_style: v("selectSubtitleStyle"),
-            visual_filter: v("selectVisualFilter"),
-            bg_music: v("inputBgMusic"),
-            bg_music_volume: parseFloat(v("inputBgMusicVolume")),
-        };
+    saveSystemConfig = async function(silent = false) {
         try {
+            // 1. Carrega a configuração atual do servidor para mesclagem
+            const currentCfg = await fetch("/api/config").then(r => r.json());
+            
+            const v = id => { 
+                const el = document.getElementById(id); 
+                return el ? el.value : null; 
+            };
+            const c = id => { 
+                const el = document.getElementById(id); 
+                return el ? el.checked : null; 
+            };
+            const getRadio = (name) => {
+                const el = document.querySelector(`input[name="${name}"]:checked`);
+                return el ? el.value : null;
+            };
+
+            const updates = {};
+            const upd = (key, val) => { if (val !== null) updates[key] = val; };
+
+            // 2. Só atualiza as chaves cujos elementos existem no DOM da aba atual
+            upd("input", v("inputVideoPath"));
+            upd("preset", v("selectPreset"));
+            upd("upload_youtube", c("checkUploadYoutube"));
+            upd("use_playwright", c("checkUsePlaywright"));
+            
+            const ytIdx = v("selectYtProfile");
+            if (ytIdx !== null) updates["youtube_profile_index"] = parseInt(ytIdx);
+
+            upd("whisper_model", getRadio("whisper_model"));
+            upd("device", getRadio("device"));
+            upd("analysis_engine", getRadio("engine"));
+            upd("model", v("inputOllamaModel"));
+
+            const topN = v("inputTopN");
+            if (topN !== null) updates["top_n"] = parseInt(topN);
+            
+            const minScore = v("inputMinScore");
+            if (minScore !== null) updates["min_score"] = parseFloat(minScore);
+            
+            if (v("inputMinDuration") !== null) updates["min_duration"] = parseFloat(v("inputMinDuration"));
+            if (v("inputMaxDuration") !== null) updates["max_duration"] = parseFloat(v("inputMaxDuration"));
+            upd("auto_frame", c("checkAutoFrame"));
+
+            upd("watermark_mode", getRadio("wm_mode"));
+            upd("watermark_text", v("inputWatermarkText"));
+            upd("watermark_image", v("inputWatermarkImage"));
+            upd("watermark_position", getRadio("wm_pos"));
+
+            upd("subtitle_style", v("selectSubtitleStyle"));
+            upd("visual_filter", v("selectVisualFilter"));
+            upd("bg_music", v("inputBgMusic"));
+            if (v("inputBgMusicVolume") !== null) updates["bg_music_volume"] = parseFloat(v("inputBgMusicVolume"));
+
+            // 3. Mescla a config antiga com apenas o que foi alterado na UI
+            const config = { ...currentCfg, ...updates };
+
             const res = await fetch("/api/config", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -228,7 +303,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Conditional visibility
     const selectAnalysisEngine = document.getElementById("selectAnalysisEngine");
-    function toggleOllamaFields() {
+    toggleOllamaFields = function() {
         const wrapper = document.getElementById("ollamaWrapper");
         if (wrapper && selectAnalysisEngine) {
             wrapper.style.display =
@@ -238,7 +313,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (selectAnalysisEngine) selectAnalysisEngine.addEventListener("change", toggleOllamaFields);
 
     const selectWatermarkMode = document.getElementById("selectWatermarkMode");
-    function toggleWatermarkFields() {
+    toggleWatermarkFields = function() {
         if (!selectWatermarkMode) return;
         const m = selectWatermarkMode.value;
         const textWrapper = document.getElementById("watermarkTextWrapper");
@@ -254,15 +329,25 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (selectWatermarkMode) selectWatermarkMode.addEventListener("change", toggleWatermarkFields);
 
-    const btnSaveConfig = document.getElementById("btnSaveConfig");
-    if (btnSaveConfig) btnSaveConfig.addEventListener("click", () => saveSystemConfig());
+    // Event Delegation para todos os botões de salvar (Config, Branding ou Strategy)
+    document.addEventListener("click", (e) => {
+        const saveBtn = e.target.closest("#btnSaveConfig, #btnSaveStrategy, #btnSaveBranding");
+        if (saveBtn) {
+            saveSystemConfig();
+        }
+    });
 
     // ── YouTube profiles ───────────────────────────────────────────────────
-    async function loadYoutubeProfiles(activeIndex = 0) {
+    loadYoutubeProfiles = async function(activeIndex = 0) {
+        console.log("[loadYoutubeProfiles] Carregando perfis do YouTube...");
         try {
             const data = await fetch("/api/youtube/profiles").then(r => r.json());
             availableProfiles = data.profiles || [];
+            if (availableProfiles.length === 0) {
+                console.warn("[loadYoutubeProfiles] Nenhum perfil do YouTube encontrado. Verifique 'youtube_profiles.json'.");
+            }
             ["selectYtProfile", "selectManageProfile"].forEach(selId => {
+                console.log(`[loadYoutubeProfiles] Tentando encontrar elemento: ${selId}`);
                 const sel = document.getElementById(selId);
                 if (!sel) return;
                 sel.innerHTML = "";
@@ -272,16 +357,18 @@ document.addEventListener("DOMContentLoaded", () => {
                     });
                     sel.appendChild(opt);
                 });
+                console.log(`[loadYoutubeProfiles] Elemento ${selId} atualizado com ${availableProfiles.length} perfis.`);
             });
             // Also populate batch panel profile selects
             syncBatchProfileSelects(availableProfiles, activeIndex);
+            console.log("[loadYoutubeProfiles] Perfis carregados com sucesso.");
         } catch (e) {
             console.error("Falha ao ler perfis:", e);
         }
     }
 
     // ── Task execution ─────────────────────────────────────────────────────
-    async function startTask(taskType, extraData = {}) {
+    startTask = async function(taskType, extraData = {}) {
         await saveSystemConfig(true);
         try {
             const res  = await fetch("/api/start", {
@@ -314,7 +401,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // ── SSE ────────────────────────────────────────────────────────────────
-    function startSSE() {
+    startSSE = function() {
         if (activeSSE) activeSSE.close();
         activeSSE = new EventSource("/stream");
         activeSSE.onmessage = e => {
@@ -325,7 +412,7 @@ document.addEventListener("DOMContentLoaded", () => {
         activeSSE.onerror = () => console.warn("SSE error — reconnecting...");
     }
 
-    function updateProgress(percent, text, activeTask) {
+    updateProgress = function(percent, text, activeTask) {
         const chip   = document.getElementById("globalStatusIndicator");
         const chipTx = document.getElementById("globalStatusText");
         if (chip && chipTx) {
@@ -349,7 +436,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ── Terminal log ───────────────────────────────────────────────────────
     const terminalOutput = document.getElementById("terminalOutput");
 
-    function log(text, cls = "") {
+    log = function(text, cls = "") {
         if (!terminalOutput) return;
         const div = document.createElement("div");
         div.className = "log-entry";
@@ -363,7 +450,7 @@ document.addEventListener("DOMContentLoaded", () => {
         terminalOutput.scrollTop = terminalOutput.scrollHeight;
     }
 
-    function clearLog() { if (terminalOutput) terminalOutput.innerHTML = ""; }
+    clearLog = function() { if (terminalOutput) terminalOutput.innerHTML = ""; }
     const btnClearLog = document.getElementById("btnClearLog");
     if (btnClearLog) btnClearLog.addEventListener("click", clearLog);
 
@@ -373,14 +460,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const batchCount  = document.getElementById("batchRowCount");
     const PRESETS     = ["auto_detect","shorts_blur","podcast_split","tiktok","reels","shorts","landscape","square","social_frame"];
 
-    function syncBatchMeta() {
+    syncBatchMeta = function() {
         if (!batchBody || !batchEmpty || !batchCount) return;
         const n = batchBody.querySelectorAll("tr").length;
         batchCount.textContent = `${n} job${n !== 1 ? "s" : ""}`;
         batchEmpty.classList.toggle("hidden", n > 0);
     }
 
-    function addBatchRow(url = "", preset = "shorts_blur", title = "", status = "pending") {
+    addBatchRow = function(url = "", preset = "shorts_blur", title = "") {
         if (!batchBody) return;
         const rowIndex = batchBody.children.length + 1;
         const tr = document.createElement("tr");
@@ -409,7 +496,7 @@ document.addEventListener("DOMContentLoaded", () => {
         syncBatchMeta();
     }
 
-    function renumberBatchRows() {
+    renumberBatchRows = function() {
         if (!batchBody) return;
         batchBody.querySelectorAll("tr").forEach((tr, i) => {
             const numCell = tr.querySelector(".col-num");
@@ -417,7 +504,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    function getBatchJobs() {
+    getBatchJobs = function() {
         if (!batchBody) return [];
         const jobs = [];
         batchBody.querySelectorAll("tr").forEach(tr => {
@@ -429,7 +516,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return jobs;
     }
 
-    function setRowStatus(rowIndex, status) {
+    setRowStatus = function(rowIndex, status) {
         if (!batchBody) return;
         const tr = batchBody.children[rowIndex];
         if (!tr) return;
@@ -441,7 +528,7 @@ document.addEventListener("DOMContentLoaded", () => {
         tr.className = status;
     }
 
-    async function loadBatchQueue() {
+    loadBatchQueue = async function() {
         try {
             const d = await fetch("/api/queue").then(r => r.json());
             const content = d.content || "";
@@ -580,7 +667,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // Populate batch profile selects
-    function syncBatchProfileSelects(profiles, activeIndex) {
+    syncBatchProfileSelects = function(profiles, activeIndex) {
         ["batchYtProfile", "batchManageProfile"].forEach(selId => {
             const sel = document.getElementById(selId);
             if (!sel) return;
@@ -598,7 +685,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const nicheBody = document.getElementById("nicheTableBody");
     let activeNicheRow = null, selectedNicheId = null;
 
-    async function loadNicheCategories() {
+    loadNicheCategories = async function() {
         try {
             const d = await fetch("/api/niche/categories").then(r => r.json());
             if (nicheBody) {
@@ -727,7 +814,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // ── Gallery ────────────────────────────────────────────────────────────
-    async function loadResultsGallery() {
+    loadResultsGallery = async function() {
         try {
             const d = await fetch("/api/status").then(r => r.json());
             const cuts = d.results || [];
@@ -790,37 +877,61 @@ function openInvestigate(trendId) {
 }
 
 function switchTab(tabId) {
-    // Hide all panels
+    console.log(`[Nav] Tentando acessar aba: ${tabId}`);
+
+    // 1. Mapeamento de nomes amigáveis/antigos para IDs internos do Attention OS
+    const mapping = {
+        "Corte E viral": "factory",
+        "corte-viral": "factory",
+        "renderização": "batch",
+        "renderizacao": "batch",
+        "branding": "config",
+        "parametros": "config",
+        "canais e contas": "youtube",
+        "canais-e-contas": "youtube",
+        "canais": "youtube"
+    };
+
+    // Normaliza o ID usando o mapeamento ou o próprio ID se não houver alias
+    const targetId = mapping[tabId] || tabId;
+    console.log(`[Nav] ID interno resolvido: ${targetId}`);
+
+    // 2. Esconder todos os painéis (.panel ou .tab-content conforme o HTML)
     const allPanels = document.querySelectorAll('.panel');
     allPanels.forEach(panel => panel.classList.remove('active'));
-    // Show target panel
-    const targetPanel = document.getElementById(`panel-${tabId}`);
+
+    // 3. Mostrar o painel alvo (Tenta com o ID resolvido)
+    const targetPanel = document.getElementById(`panel-${targetId}`);
     if (targetPanel) {
         targetPanel.classList.add('active');
+    } else {
+        console.error(`[Nav] Painel não encontrado: panel-${targetId}`);
     }
-    // Update nav state
+
+    // 4. Atualizar estado visual dos botões de navegação
     const navBtns = Array.from(document.querySelectorAll('.nav-btn[data-tab]'));
     navBtns.forEach(btn => btn.classList.remove('active'));
-    const activeBtn = navBtns.find(btn => btn.getAttribute('data-tab') === tabId);
+    
+    // Procura o botão pelo tabId original ou pelo targetId
+    const activeBtn = navBtns.find(btn => 
+        btn.getAttribute('data-tab') === tabId || btn.getAttribute('data-tab') === targetId
+    );
     if (activeBtn) activeBtn.classList.add('active');
     
-    // Load tab-specific content
-    if (tabId === 'factory') {
+    // 5. Gatilhos de carregamento de dados (Restaurados do código que funcionava)
+    if (targetId === 'factory' || targetId === 'ops') {
         startFactoryPolling();
+        startOpsSSE();
+        hydrateInitialOnce();
     } else {
         stopFactoryPolling();
-    }
-    if (tabId === 'ops') {
-        startOpsSSE();
-    } else {
         stopOpsSSE();
     }
-    if (tabId === 'batch') {
-        loadBatchQueue();
-    }
-    if (tabId === 'niche') {
-        loadNicheCategories();
-    }
+
+    if (targetId === 'batch') loadBatchQueue();
+    if (targetId === 'niche') loadNicheCategories();
+    if (targetId === 'config') loadSystemConfig();
+    if (targetId === 'youtube') loadYoutubeProfiles();
 }
 
 function initTerminalTime() {

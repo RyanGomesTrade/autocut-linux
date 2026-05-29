@@ -147,6 +147,11 @@ class YouTubeSearcher:
         self.youtube = None
         self.authenticate()
 
+    @classmethod
+    def get_all_categories(cls):
+        """Retorna o dicionário de categorias para a API do Web App."""
+        return cls.CATEGORIES
+
     def authenticate(self):
         """
         Authenticates using OAuth2, reusing existing token if valid.
