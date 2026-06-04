@@ -9,9 +9,10 @@ logger = logging.getLogger("database")
 DB_PATH = os.path.join(os.path.dirname(__file__), "viral_engine.db")
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     # Habilita WAL Mode para melhor concorrência entre web_app e workers
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 def init_db():
@@ -144,6 +145,19 @@ def init_db():
         )
     ''')
     
+    # Tabela generated_titles
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS generated_titles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER,
+            title TEXT NOT NULL,
+            score REAL,
+            strategy TEXT,
+            created_at TIMESTAMP,
+            FOREIGN KEY(job_id) REFERENCES render_jobs(job_id)
+        )
+    ''')
+    
     # Tabela metrics (Telemetria Operacional)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS operational_metrics (
@@ -245,6 +259,24 @@ def add_render_job(video_id, start, end, preset='tiktok', priority=0.0, expires_
             VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
         ''', (video_id, start, end, preset, priority, expires_at, now.isoformat(), now.isoformat()))
         conn.commit()
+
+def save_generated_titles(job_id, titles_list):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        for t in titles_list:
+            cursor.execute('''
+                INSERT INTO generated_titles (job_id, title, score, strategy, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (job_id, t['text'], t['score'], t['strategy'], now))
+        conn.commit()
+
+def get_titles_for_job(job_id):
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM generated_titles WHERE job_id = ? ORDER BY score DESC", (job_id,))
+        return [dict(row) for row in cursor.fetchall()]
         return cursor.lastrowid
 
 def get_pending_jobs():
@@ -493,6 +525,64 @@ def save_segments(video_id, segments):
     conn.commit()
     conn.close()
 
+def delete_video(video_id):
+    """
+    Remove um vídeo e todos os dados dependentes.
+    Usa conexão direta (sem context manager) para poder aplicar
+    PRAGMA foreign_keys = OFF antes de qualquer transação.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    try:
+        # PRAGMA precisa estar fora de transação — executar antes de qualquer DML
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.commit()
+
+        cur = conn.cursor()
+
+        # 1. Coleta job_ids antes de deletar render_jobs
+        cur.execute("SELECT job_id FROM render_jobs WHERE video_id = ?", (video_id,))
+        job_ids = [row[0] for row in cur.fetchall()]
+
+        # 2. generated_titles (FK -> render_jobs.job_id)
+        if job_ids:
+            placeholders = ",".join("?" * len(job_ids))
+            cur.execute(
+                f"DELETE FROM generated_titles WHERE job_id IN ({placeholders})",
+                job_ids,
+            )
+
+        # 3. generated_clips (FK -> videos.video_id)
+        cur.execute("DELETE FROM generated_clips WHERE video_id = ?", (video_id,))
+
+        # 4. render_jobs (FK -> videos.video_id)
+        cur.execute("DELETE FROM render_jobs WHERE video_id = ?", (video_id,))
+
+        # 5. segments (FK -> videos.video_id)
+        cur.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
+
+        # 6. comments_signals (FK -> videos.video_id)
+        cur.execute("DELETE FROM comments_signals WHERE video_id = ?", (video_id,))
+
+        # 7. video_history (FK -> videos.video_id)
+        cur.execute("DELETE FROM video_history WHERE video_id = ?", (video_id,))
+
+        # 8. videos (tabela raiz)
+        cur.execute("DELETE FROM videos WHERE video_id = ?", (video_id,))
+
+        conn.commit()
+
+        # Verifica se realmente deletou
+        cur.execute("SELECT COUNT(*) FROM videos WHERE video_id = ?", (video_id,))
+        remaining = cur.fetchone()[0]
+        if remaining > 0:
+            raise RuntimeError(f"Video {video_id} ainda existe após DELETE — verifique FKs.")
+
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
+        conn.close()
 
 def save_comments_signals(video_id, signals):
     """

@@ -91,9 +91,86 @@ document.addEventListener("DOMContentLoaded", () => {
             attention.eventBus.emit("CANCEL_REQUESTED", { id: jobId });
             setTimeout(() => { cancelBtn.disabled = false; cancelBtn.textContent = "CANCEL"; }, 2000);
         }
-    });
 
-    // EventBus → Backend Bridge
+        // Botão RETRY (Nova Funcionalidade)
+        const retryBtn = e.target.closest("[data-action='retry']");
+        if (retryBtn) {
+            const jobId = retryBtn.dataset.id;
+            retryBtn.disabled = true;
+            retryBtn.textContent = "RETRYING...";
+            await fetch("/api/ops/jobs/control", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ job_id: jobId.replace('job_', ''), action: 'retry' })
+            });
+            hydrateInitialOnce();
+        }
+
+        // Botão DELETE TREND
+        const deleteTrendBtn = e.target.closest("[data-action='delete-trend']");
+        if (deleteTrendBtn) {
+            const trendId = deleteTrendBtn.dataset.id;
+            if (confirm("Deseja remover este vídeo do monitor de tendências?")) {
+                const videoId = trendId.replace('trend_', '');
+
+                deleteTrendBtn.disabled = true;
+                deleteTrendBtn.textContent = "REMOVING...";
+
+                try {
+                    console.log("[DELETE] trendId:", trendId, "videoId:", videoId);
+                    console.log("[DELETE] URL:", `/api/ops/trends/${videoId}`);
+
+                    const res = await fetch(`/api/ops/trends/${videoId}`, { method: "DELETE" });
+                    const text = await res.text(); // lê como texto bruto primeiro
+                    console.log("[DELETE] status:", res.status, "body:", text);
+
+                    let data;
+                    try {
+                        data = JSON.parse(text);
+                    } catch {
+                        alert("Resposta inválida do servidor:\n" + text.substring(0, 300));
+                        deleteTrendBtn.disabled = false;
+                        deleteTrendBtn.textContent = "DELETE";
+                        return;
+                    }
+
+                    if (data.status !== "success") {
+                        alert("Erro ao remover: " + data.message);
+                        deleteTrendBtn.disabled = false;
+                        deleteTrendBtn.textContent = "DELETE";
+                        return;
+                    }
+
+                    const attention = _getAttentionOS();
+                    if (attention) {
+                        attention.runtime.nodes.delete(trendId);
+                        attention.runtime.meta.delete(trendId);
+                    }
+
+                    const node = document.querySelector(`[data-video-id="${trendId}"]`);
+                    if (node) node.remove();
+
+                    hydrateInitialOnce();
+                } catch (err) {
+                    alert("Falha na requisição: " + err.message);
+                    deleteTrendBtn.disabled = false;
+                    deleteTrendBtn.textContent = "DELETE";
+                }
+            }
+        }
+
+        // Botão COPY TITLE
+        if (e.target.closest(".btn-copy-title")) {
+            const btn = e.target.closest(".btn-copy-title");
+            const text = btn.dataset.text;
+            navigator.clipboard.writeText(text);
+            
+            const oldText = btn.textContent;
+            btn.textContent = "COPIED!";
+            setTimeout(() => btn.textContent = oldText, 1000);
+        }
+    });
+    
     const checkAttentionReady = setInterval(() => {
         const attention = _getAttentionOS();
         if (attention?.injectProjector && attention.eventBus) {
@@ -157,6 +234,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             });
 
+            attention.eventBus.on("TITLES_GENERATED", (payload, { id }) => {
+                const jobNode = window.__AttentionOS.runtime.nodes.get(id);
+                if (jobNode) renderGeneratedTitles(jobNode, payload);
+            });
+
             attention.injectProjector(projectEntity);
             hydrateInitialOnce();
         }
@@ -201,6 +283,10 @@ document.addEventListener("DOMContentLoaded", () => {
             if (g("inputMinScore")) {
                 g("inputMinScore").value = cfg.min_score || 40;
                 if (g("valMinScore")) g("valMinScore").textContent = cfg.min_score || 40;
+                // Feedback em tempo real
+                g("inputMinScore").oninput = (e) => { 
+                    if(g("valMinScore")) g("valMinScore").textContent = e.target.value; 
+                };
             }
             
             if (g("inputMinDuration")) g("inputMinDuration").value = cfg.min_duration || 20;
@@ -220,6 +306,10 @@ document.addEventListener("DOMContentLoaded", () => {
             if (g("inputBgMusicVolume")) {
                 g("inputBgMusicVolume").value = cfg.bg_music_volume || 0.15;
                 if (g("valBgMusicVolume")) g("valBgMusicVolume").textContent = Math.round((cfg.bg_music_volume || 0.15) * 100) + "%";
+                // Feedback em tempo real
+                g("inputBgMusicVolume").oninput = (e) => {
+                    if(g("valBgMusicVolume")) g("valBgMusicVolume").textContent = Math.round(e.target.value * 100) + "%";
+                };
             }
 
             await loadYoutubeProfiles(cfg.youtube_profile_index);
@@ -1046,7 +1136,7 @@ function projectEntity(id, meta, node) {
     const { type, lastPatch: p } = meta;
     
     // Log para debug
-    console.log("[projectEntity] id:", id, "type:", type, "lastPatch:", p);
+    // console.log("[projectEntity] id:", id, "type:", type, "lastPatch:", p);
 
     // Se o job está cancelado/concluído (e já enviado), remover da UI
     if (type === "job" && p.status && p.upload_status) {
@@ -1144,6 +1234,7 @@ function createBaseNode(id, type, p) {
                         ${p.status ? p.status.toUpperCase() : 'PENDING'}
                     </div>
                     <div class="action-group" style="display:flex; gap:4px;">
+                        <button class="btn-action success btn-retry hidden" data-action="retry" data-id="${id}">RETRY</button>
                         <button class="btn-action" data-action="pause" data-id="${id}" style="font-size:11px; padding:4px 8px;">PAUSE</button>
                         <button class="btn-action danger" data-action="cancel" data-id="${id}" style="font-size:11px; padding:4px 8px;">CANCEL</button>
                     </div>
@@ -1182,6 +1273,7 @@ function createBaseNode(id, type, p) {
             <div class="action-group" style="display:flex; gap:4px;">
                 <button class="btn-action success" data-action="queue" data-id="${id}">+ QUEUE</button>
                 <button class="btn-action" data-action="investigate" data-id="${id}">INVESTIGATE</button>
+                <button class="btn-action danger" data-action="delete-trend" data-id="${id}">DELETE</button>
             </div>
         `;
         return root;
@@ -1216,6 +1308,7 @@ function updateNodeProperties(node, type, p) {
         const stage = node.querySelector('.job-stage');
         const worker = node.querySelector('.job-worker');
         const badge = node.querySelector('.job-status-badge');
+        const retryBtn = node.querySelector('.btn-retry');
         const progressText = node.querySelector('.job-progress-text');
         const progressBar = node.querySelector('.job-progress-bar');
         const eta = node.querySelector('.job-eta');
@@ -1226,6 +1319,11 @@ function updateNodeProperties(node, type, p) {
         if (p.status) {
             badge.className = `job-status-badge status-${p.status.toLowerCase()}`;
             badge.textContent = p.status.toUpperCase();
+            if (retryBtn) {
+                // Só mostra retry se falhou
+                if (p.status.toUpperCase() === "FAILED") retryBtn.classList.remove('hidden');
+                else retryBtn.classList.add('hidden');
+            }
         }
         if (p.stage && stage) stage.textContent = p.stage.toUpperCase();
         if (p.worker && worker) worker.textContent = p.worker;
@@ -1305,3 +1403,39 @@ function _upsertJobItem(j) { /* todo */ }
 function updateOpsDashboard() { /* todo */ }
 function startFactoryPolling() { /* todo */ }
 function stopFactoryPolling() { /* todo */ }
+
+/**
+ * Injeta visualmente a lista de títulos gerados no card do Job
+ */
+function renderGeneratedTitles(node, payload) {
+    let container = node.querySelector('.generated-titles-area');
+    
+    // Se não existir o container de títulos no card, cria um
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'generated-titles-area';
+        container.style.marginTop = '12px';
+        container.style.padding = '10px';
+        container.style.background = 'var(--bg1)';
+        container.style.borderTop = '1px solid var(--border)';
+        node.appendChild(container);
+    }
+
+    const titles = payload.titles || [];
+    const best = payload.best_title;
+
+    container.innerHTML = `
+        <div style="font-size:10px; color:var(--amber); margin-bottom:8px; font-family:var(--mono);">💡 ATTENTION_TITLE_ENGINE // V1.0</div>
+        <div class="titles-list" style="display:flex; flex-direction:column; gap:6px;">
+            ${titles.slice(0, 5).map((t, i) => `
+                <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; background:rgba(255,255,255,0.03); padding:4px 8px;">
+                    <span style="color:${t.text === best ? 'var(--green)' : 'var(--text-1)'}">${i+1}. ${t.text}</span>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <span style="font-size:10px; color:var(--text-3); font-family:var(--mono);">SC:${(t.score*100).toFixed(0)}</span>
+                        <button class="btn-copy-title" data-text="${t.text}" style="background:none; border:1px solid var(--border); color:var(--text-2); font-size:9px; cursor:pointer; padding:2px 6px;">COPY</button>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}

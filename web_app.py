@@ -43,6 +43,13 @@ progress_data = {
     "results": []
 }
 
+# Blacklist em memória: vídeos deletados nesta sessão
+_deleted_video_ids = set()
+
+# Flag para pausar o SSE durante operações de escrita críticas
+_sse_pause = threading.Event()
+_sse_pause.set()  # começa "liberado" (set = pode rodar)
+
 # ─── Custom Logging Handler para SSE ──────────────────────────────────────────
 class SSELoggingHandler(logging.Handler):
     def emit(self, record):
@@ -451,6 +458,43 @@ def api_niche_add():
     filename = cfg.get("batch_list", "list.txt")
     
     added = save_to_list(videos, filename=filename)
+
+    # Salva no banco para aparecer no Trend Monitor (Attention Ops)
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    for v in videos:
+        try:
+            url = v.get("url", "")
+            # Extrai o video_id da URL (ex: ?v=abc123)
+            video_id = None
+            if "v=" in url:
+                video_id = url.split("v=")[-1].split("&")[0]
+            if not video_id:
+                continue
+
+            database.save_video({
+                "video_id":          video_id,
+                "channel_id":        v.get("channel", "unknown"),
+                "title":             v.get("title", ""),
+                "url":               url,
+                "vph":               0.0,
+                "relative_vph":      1.0,
+                "vph_acceleration":  0.0,
+                "momentum_score":    0.0,
+                "trend_score":       0.5,
+                "final_viral_score": 0.5,  # Score inicial para passar no filtro > 0.1
+                "confidence_score":  1.0,
+                "decision_trace":    [],
+                "audio_hash":        None,
+                "event_context":     {},
+                "raw_signals":       {},
+                "created_at":        now,
+                "last_scanned":      now,
+            })
+        except Exception as e:
+            logger.error(f"Erro ao salvar vídeo {v.get('url')} no banco: {e}")
+
     return jsonify({"status": "success", "added_count": added})
 
 # ─── Rotas do YouTube / Playwright Session ────────────────────────────────────
@@ -583,11 +627,14 @@ def api_ops_trends():
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM videos 
-                WHERE final_viral_score > 0.1 
+                WHERE final_viral_score > 0.0 
                 ORDER BY final_viral_score DESC LIMIT 30
             """)
             trends = [dict(row) for row in cursor.fetchall()]
             
+            # Filtra vídeos deletados nesta sessão que ainda possam aparecer
+            trends = [t for t in trends if t["video_id"] not in _deleted_video_ids]
+
             # Processar decision_trace de JSON para objeto
             for t in trends:
                 if t.get('decision_trace'):
@@ -604,6 +651,20 @@ def api_ops_trends():
             return jsonify(trends)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ops/trends/<video_id>", methods=["DELETE"])
+def api_ops_trends_delete(video_id):
+    try:
+        _sse_pause.clear()          # pausa o SSE
+        time.sleep(1.5)             # espera o SSE soltar a conexão atual
+        database.delete_video(video_id)
+        _deleted_video_ids.add(video_id)
+        return jsonify({"status": "success", "message": "Tendência removida com sucesso!"})
+    except Exception as e:
+        logger.error(f"Erro ao deletar trend {video_id}: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        _sse_pause.set()            # libera o SSE
 
 @app.route("/api/ops/segments/<video_id>", methods=["GET"])
 def api_ops_segments(video_id):
@@ -1049,6 +1110,7 @@ def stream_events():
         last_job_created_at = _iso_utc_epoch()
         last_video_last_scanned = _iso_utc_epoch()
         last_segment_updated_at = _iso_utc_epoch()
+        last_title_created_at = _iso_utc_epoch()
         last_metric_timestamp = _iso_utc_epoch()
 
         last_heartbeat = 0.0
@@ -1069,6 +1131,12 @@ def stream_events():
         # Loop principal
         while True:
             try:
+                # Pausa se uma operação de escrita está em andamento
+                _sse_pause.wait(timeout=5)  # espera até 5s pela liberação
+                if not _sse_pause.is_set():
+                    time.sleep(0.5)
+                    continue
+
                 now = time.time()
                 if now - last_heartbeat >= 10.0:
                     last_heartbeat = now
@@ -1077,6 +1145,8 @@ def stream_events():
                 with database.get_connection() as conn:
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
+                    # Aumenta o timeout para evitar interrupções de leitura no SSE
+                    conn.execute("PRAGMA busy_timeout = 10000")
 
                     # ── Jobs (render_jobs) ──
                     cur.execute("""
@@ -1172,12 +1242,35 @@ def stream_events():
                             r["updated_at"] or last_job_updated_at for r in job_rows
                         )
 
+                    # ── Generated Titles ──
+                    cur.execute("""
+                        SELECT * FROM generated_titles
+                        WHERE created_at > ?
+                        ORDER BY created_at ASC
+                        LIMIT 100
+                    """, (last_title_created_at,))
+                    title_rows = cur.fetchall()
+                    if title_rows:
+                        # Agrupar títulos por job_id para o frontend
+                        by_job = {}
+                        for r in title_rows:
+                            jid = r['job_id']
+                            if jid not in by_job: by_job[jid] = []
+                            by_job[jid].append(dict(r))
+                        
+                        for jid, titles in by_job.items():
+                            yield emit("TITLES_GENERATED", id_val=f"job_{jid}", payload={
+                                "best_title": titles[0]['title'],
+                                "titles": titles
+                            })
+                        last_title_created_at = max(r['created_at'] for r in title_rows)
+
                     # ── Trends (videos) ──
                     cur.execute("""
                         SELECT *
                         FROM videos
                         WHERE last_scanned > ?
-                          AND final_viral_score > 0.1
+                          AND final_viral_score > 0.0
                         ORDER BY last_scanned ASC
                         LIMIT 100
                     """, (last_video_last_scanned,))

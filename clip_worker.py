@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import database
 from utils import setup_logging, ensure_dir, seconds_to_hms
 from cutter import EXPORT_PRESETS, _run_ffmpeg, detect_silence, adjust_cut_to_avoid_silence, cut_video_segment
+from title_engine import AttentionTitleEngine
 
 # Configuração de logging
 logger = setup_logging(log_level="DEBUG", log_file="clip_worker.log")
@@ -138,6 +139,16 @@ class ClipWorker:
                 metrics["total_time"] = round(time.time() - start_ts, 2)
                 
                 database.update_job_status(job_id, "DONE", output_path=final_clip_path, metrics=metrics)
+                
+                # --- Geração de Títulos Operacional ---
+                try:
+                    engine = AttentionTitleEngine()
+                    # Em v1, o clip_data é derivado do job e segment features
+                    engine.generate_titles_for_job(job_id)
+                    logger.info(f"💡 Títulos gerados para Job {job_id}")
+                except Exception as te:
+                    logger.error(f"Falha no Title Engine: {te}")
+
                 # Métricas operacionais (a UI consome via /stream/events)
                 database.log_operational_metric("render_time", metrics.get("render_time", 0.0), {"video_id": video_id})
                 database.log_operational_metric("render_throughput", metrics["total_time"], {"video_id": video_id})
