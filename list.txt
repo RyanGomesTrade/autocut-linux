@@ -1,38 +1,15 @@
 
-# --- Novas adições: 7 vídeos ---
-https://www.youtube.com/watch?v=6K_eWCdJdVA # #196 | ELE NUNCA ACEITOU MEU FILHO MAIS VELHO | Histórias de Divórcios | 132.8K views
-https://www.youtube.com/watch?v=NqJeqslW6lI # O LEGADO DE CLARICE FALCÃO, FRANJAS E ESQUETES MUSICAIS | POR TRÁS DA PORTA #05 | Fundos da Porta | 121.0K views
-https://www.youtube.com/watch?v=AUJRugUI3W8 # Ana Campagnolo - 4º episódio - PodPaulo | Paulo Souza | 19.5K views
-https://www.youtube.com/watch?v=KCrYQhKk7_M # Renner (Rick & Renner) – Podcast Segundeiro Raiz #69 | A História Nunca Contada da Dupla | Willian Segundeiro Raiz | 16.2K views
-https://www.youtube.com/watch?v=Udm5BnuaYPg # Entrevista completa Jorge Sales. Quase um Podcast #EP008 | Quase um Podcast | 37 views
-https://www.youtube.com/watch?v=rfGRH8Znxgw # ENTREVISTA RÁDIO CULTURA - OFICINA DE PODCAST | Portal Radar | 18 views
-https://www.youtube.com/watch?v=C9Pqg4pI5MA # #reprise  PODCAST NO AR #16 ENTREVISTA COMPLETA COM O CANTOR MATHEUS CARDOSO | Andratv+ | 2 views
-
-# --- Novas adições: 2 vídeos ---
-https://www.youtube.com/watch?v=GEHJqiY5Dy0 # Por Que Você NÃO Deve Investir Seus Primeiros R$100 em Ações (O ERRO DO INICIANTE) | Luan Holanda | Prosperidade é Decisão
-https://www.youtube.com/watch?v=qT9MMgeDcvI # Ibovespa subiu 3 mil pontos em 2 dias: bancos e commodities revelam a verdade ! | Dinheiro Direto
-
-# --- Novas adições: 2 vídeos ---
-https://www.youtube.com/watch?v=41kBYHbjGuI # Como Começar a Investir do Absoluto Zero | Seja Rico 
-https://www.youtube.com/watch?v=Q8PMyfeAt9I # Ibovespa Versus Dólar | Quem Ganha e Quem Perde com Isso? | Dinheiro Direto
-
 # --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=6Rp2-pdCYJM # ATENÇÃO: O AUMENTO dos PREÇOS dos IMÓVEIS em 2026 está MAIOR que a INFLAÇÃO! VEJA AGORA MESMO! | Maurício Schmid
+https://www.youtube.com/watch?v=F06wISPgkNw # Tom Read Wilson Finally Tells His Story: I Couldn’t Hide Myself Anymore | We Need To Talk
 
-# --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=iCooP-cO2S4 # Exclusivo: veja o momento da prisão de Deolane Bezerra, suspeita de ligação com o PCC | g1
-
-# --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=P1HFplZDtBc # CLAUDE - A I.A. QUE MUDOU A INTERNET PRA SEMPRE | Nerds de Negócios
-
-# --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=ZA566PYz9-w # MEI + IA + Startups: O FUTURO dos Pequenos Negócios Já Começou! | Otimize Seu Negócio
-
-# --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=j__IwSl7U6w # A VERDADE QUE ESCONDEM SOBRE COMPRAR IMÓVEL PARA ALUGAR | Riqueza Em Dias
-
-# --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=xzRqWS0MnTs # OS 3 INVESTIMENTOS QUE MAIS ME RENDERAM DINHEIRO NOS ÚLTIMOS 12 MESES! | Papo Renda - Bruna Souza
-
-# --- Novas adições: 1 vídeos ---
-https://www.youtube.com/watch?v=eusgRBVM1rk # O YouTube virou a MAIOR oportunidade para OS NEGÓCIOS em 2026 | Pateo 76
+# --- Novas adições: 10 vídeos ---
+https://www.youtube.com/watch?v=eoRobQBlPQs # How to Pass Machine Learning 2026 | Machine Learning Importance | MU SEM 6 AIML✅📚 | Last Moment Tuitions Engineering
+https://www.youtube.com/watch?v=qKZPeDP-FJs # Calculus of Neural Networks (AI) Simply Explained | Concept | Math | Code | CompuFlair
+https://www.youtube.com/watch?v=q8XOJUgGcAo # The AI Breakthrough That Changed Everything | Self-Attention Explained | Gate Smashers
+https://www.youtube.com/watch?v=HDLb20OQC3I # Why Neural Networks Are Useless Without This (Non-Linearity) | Dave Defines
+https://www.youtube.com/watch?v=vtOI7NgXMQQ # Introduction to Gradient Descent | How Models Minimize Loss | Gate Smashers
+https://www.youtube.com/watch?v=rIJ7fBPwI4M # Deep Learning Lecture 1 | Introduction to AI, ML & Neural Networks | Stack Academy
+https://www.youtube.com/watch?v=FQGxPb0Tmx4 # Introduction to LSTM (Long Short-Term Memory) | Deep Learning | Gate Smashers
+https://www.youtube.com/watch?v=E9wi_lFLdgY # Build Your First Machine Learning Model in Python | Complete Beginner Tutorial | Akhil Misra
+https://www.youtube.com/watch?v=sDt9F6CUxRE # Neural Networks Explained in Telugu | Gen AI Telugu Series 🔥 | TechInTelugu
+https://www.youtube.com/watch?v=EcqaG84xtuU # How Neural Networks Actually Learn — Backpropagation Visualized | VisualCompute

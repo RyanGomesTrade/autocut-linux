@@ -1,23 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-uploader.py — Upload para o YouTube Studio via browser automatizado.
+uploader.py — Upload para YouTube Studio via browser automatizado.
 
 Engine principal : Playwright  (pip install playwright && playwright install chromium)
 Engine fallback  : Selenium    (pip install selenium webdriver-manager)
 
-Estratégia:
-  - Usa um perfil de browser persistente (cookies/sessão salvos por canal).
-  - Na primeira execução, abre o browser visível para você fazer login manualmente.
-  - Nas execuções seguintes, reutiliza a sessão salva — sem precisar logar de novo.
-  - Preenche todos os campos do YouTube Studio (título, descrição, tags, categoria,
-    público, made for kids) como um humano faria.
-  - Delays com jitter entre ações para não parecer automação.
-  - Suporte a múltiplos canais via perfis separados.
+Anti-detecção:
+  - CDP / JS patches que removem todas as flags de webdriver ANTES do primeiro request
+  - User-Agent rotativo (pool de UAs reais do Chrome em Windows/Mac)
+  - Mouse com trajetória Bézier (movimento humano simulado)
+  - Delays com distribuição gaussiana (não-uniforme)
+  - Scroll suave antes de interagir com elementos
+  - Sem --disable-blink-features (flag suspeita)
+  - navigator.plugins, navigator.languages, WebGL, canvas spoofing via JS
+  - Sem slow_mo fixo (substituído por delays gaussianos por ação)
 """
 
 import os
 import re
 import time
+import math
 import random
 import logging
 from pathlib import Path
@@ -25,46 +27,113 @@ from typing import Optional
 
 logger = logging.getLogger("viral_cutter.uploader")
 
-# ─── Config de paths ──────────────────────────────────────────────────────────
+BASE_DIR     = Path(__file__).parent
+PROFILES_DIR = BASE_DIR / "browser_profiles"
+STUDIO_URL   = "https://studio.youtube.com"
+UPLOADS_URL  = "https://www.youtube.com/upload"
 
-BASE_DIR      = Path(__file__).parent
-PROFILES_DIR  = BASE_DIR / "browser_profiles"   # sessões salvas por canal
-UPLOADS_URL   = "https://www.youtube.com/upload"
-STUDIO_URL    = "https://studio.youtube.com"
+# ─── Pool de User-Agents reais ────────────────────────────────────────────────
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
 
-def _jitter(lo: float = 0.4, hi: float = 1.2) -> float:
-    """Retorna um delay aleatório entre lo e hi segundos."""
-    return random.uniform(lo, hi)
+# ─── JS injetado para zerar todas as flags de automação ──────────────────────
 
-def _human_type(element, text: str, delay_lo=0.04, delay_hi=0.12):
+_STEALTH_JS = """
+// Remove webdriver flag
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// Plugins realistas (Chrome real tem vários)
+Object.defineProperty(navigator, 'plugins', {
+  get: () => {
+    const plugins = [
+      { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+      { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+    ];
+    plugins.__proto__ = PluginArray.prototype;
+    return plugins;
+  }
+});
+
+// Linguagens
+Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+
+// Hardware concurrency realista
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+
+// DeviceMemory
+Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+// Permission query patch (Notification)
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+  parameters.name === 'notifications'
+    ? Promise.resolve({ state: Notification.permission })
+    : originalQuery(parameters)
+);
+
+// Chrome runtime patch
+window.chrome = {
+  app: { isInstalled: false },
+  webstore: { onInstallStageChanged: {}, onDownloadProgress: {} },
+  runtime: {
+    PlatformOs: { MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' },
+    PlatformArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64' },
+    RequestUpdateCheckStatus: { THROTTLED: 'throttled', NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available' },
+    OnInstalledReason: { INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update' },
+    OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+    connect: () => {},
+    sendMessage: () => {},
+  },
+};
+
+// WebGL vendor/renderer realista
+const getParameter = WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter = function(parameter) {
+  if (parameter === 37445) return 'Intel Inc.';
+  if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+  return getParameter.call(this, parameter);
+};
+"""
+
+# ─── Helpers de comportamento humano ─────────────────────────────────────────
+
+def _gauss_delay(mean: float = 0.6, sigma: float = 0.15, min_val: float = 0.15) -> float:
+    """Delay gaussiano — muito mais humano que uniform()."""
+    return max(min_val, random.gauss(mean, sigma))
+
+
+def _bezier_mouse_path(x0, y0, x1, y1, steps=None):
     """
-    Digita texto caractere por caractere com delay variável.
-    Só disponível no contexto Playwright — ver uso abaixo.
+    Gera pontos de trajetória Bézier cúbica entre dois pontos.
+    Simula o movimento natural do mouse humano.
     """
-    for ch in text:
-        element.type(ch, delay=random.randint(int(delay_lo * 1000), int(delay_hi * 1000)))
+    if steps is None:
+        dist = math.hypot(x1 - x0, y1 - y0)
+        steps = max(8, int(dist / 12))
 
-def _build_description(job: dict) -> str:
-    """Monta descrição a partir dos campos do operador."""
-    parts = []
-    if job.get("operator_notes"):
-        parts.append(job["operator_notes"].strip())
-        parts.append("")
-    parts.append("#shorts")
-    return "\n".join(parts)
+    # Pontos de controle aleatórios (curvatura natural)
+    cx1 = x0 + random.uniform(0.1, 0.4) * (x1 - x0) + random.uniform(-40, 40)
+    cy1 = y0 + random.uniform(0.1, 0.4) * (y1 - y0) + random.uniform(-40, 40)
+    cx2 = x0 + random.uniform(0.6, 0.9) * (x1 - x0) + random.uniform(-40, 40)
+    cy2 = y0 + random.uniform(0.6, 0.9) * (y1 - y0) + random.uniform(-40, 40)
 
-def _build_tags(job: dict) -> list[str]:
-    """Extrai tags/hashtags do campo operator_hashtags."""
-    raw = job.get("operator_hashtags", "")
-    return [t.strip().lstrip("#") for t in raw.replace(",", " ").split() if t.strip()]
+    points = []
+    for i in range(steps + 1):
+        t = i / steps
+        mt = 1 - t
+        x = mt**3*x0 + 3*mt**2*t*cx1 + 3*mt*t**2*cx2 + t**3*x1
+        y = mt**3*y0 + 3*mt**2*t*cy1 + 3*mt*t**2*cy2 + t**3*y1
+        points.append((x, y))
+    return points
 
-def _build_title(job: dict, clip_path: str) -> str:
-    return (
-        job.get("operator_title")
-        or Path(clip_path).stem
-    )[:100]
 
 def _profile_dir(profile: str) -> Path:
     d = PROFILES_DIR / profile
@@ -72,60 +141,87 @@ def _profile_dir(profile: str) -> Path:
     return d
 
 
+def _build_title(job: dict, clip_path: str) -> str:
+    return (job.get("operator_title") or Path(clip_path).stem)[:100]
+
+
+def _build_description(job: dict) -> str:
+    parts = []
+    if job.get("operator_notes"):
+        parts.append(job["operator_notes"].strip())
+        parts.append("")
+    parts.append("#shorts")
+    return "\n".join(parts)
+
+
+def _build_tags(job: dict) -> list:
+    raw = job.get("operator_hashtags", "")
+    return [t.strip().lstrip("#") for t in raw.replace(",", " ").split() if t.strip()]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# ENGINE PLAYWRIGHT
+# ENGINE PLAYWRIGHT (principal)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PlaywrightUploader:
     """
-    Faz upload via Playwright usando um perfil de browser persistente.
+    Upload via Playwright com máxima furtividade.
 
-    Setup inicial (uma vez por máquina):
-        pip install playwright
-        playwright install chromium
-
-    Primeiro uso por canal:
-        Chame upload_video() com headless=False — o browser abre, você faz
-        login normalmente no YouTube/Google, e a sessão é salva para sempre.
+    Técnicas anti-detecção aplicadas:
+    - JS stealth injetado via addInitScript (roda ANTES de qualquer JS da página)
+    - User-Agent rotativo do pool de UAs reais
+    - Mouse com trajetória Bézier
+    - Delays gaussianos por ação
+    - Scroll suave antes de clicar
+    - Sem --disable-blink-features
+    - Sem slow_mo fixo
     """
 
     def __init__(
         self,
         profile: str = "default",
         headless: bool = True,
-        slow_mo: int = 80,          # ms entre ações (simula humano)
-        timeout: int = 60_000,      # ms timeout geral
+        timeout: int = 60_000,
     ):
-        self.profile    = profile
-        self.headless   = headless
-        self.slow_mo    = slow_mo
-        self.timeout    = timeout
-        self._pw        = None
-        self._browser   = None
-        self._context   = None
-        self._page      = None
+        self.profile   = profile
+        self.headless  = headless
+        self.timeout   = timeout
+        self._pw       = None
+        self._context  = None
+        self._page     = None
+        self._ua       = random.choice(_USER_AGENTS)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def _start(self):
         from playwright.sync_api import sync_playwright
-        self._pw      = sync_playwright().start()
-        profile_path  = str(_profile_dir(self.profile))
+        self._pw = sync_playwright().start()
+        profile_path = str(_profile_dir(self.profile))
 
-        # persistent_context mantém cookies/localStorage entre sessões
         self._context = self._pw.chromium.launch_persistent_context(
             user_data_dir = profile_path,
             headless      = self.headless,
-            slow_mo       = self.slow_mo,
-            args          = [
-                "--disable-blink-features=AutomationControlled",  # oculta webdriver flag
+            # SEM slow_mo fixo — usamos delays gaussianos manualmente
+            args = [
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disable-infobars",
+                "--disable-notifications",
+                "--disable-popup-blocking",
+                "--start-maximized",
             ],
-            viewport      = {"width": 1280, "height": 800},
-            locale        = "pt-BR",
-            timezone_id   = "America/Sao_Paulo",
+            user_agent  = self._ua,
+            viewport    = {"width": random.randint(1280, 1440), "height": random.randint(768, 900)},
+            locale      = "pt-BR",
+            timezone_id = "America/Sao_Paulo",
+            geolocation = {"longitude": -46.63, "latitude": -23.55},  # São Paulo
+            permissions = ["geolocation"],
+            color_scheme = "light",
         )
+
+        # Injeta stealth JS em TODAS as páginas antes do primeiro script
+        self._context.add_init_script(_STEALTH_JS)
+
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.set_default_timeout(self.timeout)
 
@@ -137,27 +233,76 @@ class PlaywrightUploader:
                 self._pw.stop()
         except Exception:
             pass
-        self._pw = self._browser = self._context = self._page = None
+        self._pw = self._context = self._page = None
+
+    # ── Ações humanas ─────────────────────────────────────────────────────────
+
+    def _move_mouse_to(self, x: float, y: float):
+        """Move o mouse com trajetória Bézier."""
+        try:
+            cur = self._page.evaluate("() => ({ x: window.__mouseX || 640, y: window.__mouseY || 400 })")
+            x0, y0 = cur.get("x", 640), cur.get("y", 400)
+        except Exception:
+            x0, y0 = random.randint(200, 800), random.randint(200, 600)
+
+        points = _bezier_mouse_path(x0, y0, x, y)
+        for px, py in points:
+            self._page.mouse.move(px, py)
+            time.sleep(random.uniform(0.002, 0.008))
+
+    def _human_click(self, locator):
+        """Scroll até o elemento, move o mouse com Bézier e clica."""
+        locator.scroll_into_view_if_needed()
+        time.sleep(_gauss_delay(0.3, 0.1))
+
+        box = locator.bounding_box()
+        if box:
+            # Clica em ponto aleatório dentro do elemento (não sempre no centro)
+            tx = box["x"] + box["width"]  * random.uniform(0.3, 0.7)
+            ty = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+            self._move_mouse_to(tx, ty)
+            time.sleep(_gauss_delay(0.15, 0.05))
+            self._page.mouse.click(tx, ty)
+        else:
+            locator.click()
+
+        time.sleep(_gauss_delay(0.4, 0.15))
+
+    def _human_type(self, locator, text: str):
+        """Digita com delay gaussiano por caractere e pequenas pausas entre palavras."""
+        locator.click()
+        time.sleep(_gauss_delay(0.2, 0.08))
+        locator.press("Control+a")
+        time.sleep(_gauss_delay(0.1, 0.04))
+        locator.press("Backspace")
+        time.sleep(_gauss_delay(0.2, 0.08))
+
+        for i, ch in enumerate(text):
+            locator.type(ch, delay=random.randint(40, 140))
+            # Pausa maior após espaço (fim de palavra) — comportamento humano
+            if ch == " ":
+                time.sleep(_gauss_delay(0.08, 0.03))
+            # Micro-pausa ocasional (pensar antes de continuar)
+            if i > 0 and i % random.randint(8, 20) == 0:
+                time.sleep(_gauss_delay(0.3, 0.12))
+
+    def _scroll_page(self, amount: int = None):
+        """Scroll suave aleatório na página."""
+        if amount is None:
+            amount = random.randint(100, 400)
+        self._page.evaluate(f"window.scrollBy({{top: {amount}, behavior: 'smooth'}})")
+        time.sleep(_gauss_delay(0.5, 0.15))
 
     # ── Login guard ───────────────────────────────────────────────────────────
 
     def _ensure_logged_in(self):
-        """
-        Navega para o Studio. Se não estiver logado, abre visível
-        e espera o usuário fazer login manualmente (até 3 minutos).
-        """
         page = self._page
         page.goto(STUDIO_URL, wait_until="domcontentloaded")
-        time.sleep(_jitter(1.5, 2.5))
+        time.sleep(_gauss_delay(2.0, 0.4))
 
-        # Se redirecionou para accounts.google.com, não está logado
         if "accounts.google.com" in page.url or "signin" in page.url:
             if self.headless:
-                # Reinicia visível para o usuário logar
-                logger.warning(
-                    f"⚠️  Perfil '{self.profile}' não está logado. "
-                    "Reiniciando em modo visível para autenticação manual..."
-                )
+                logger.warning(f"⚠️ Perfil '{self.profile}' não logado. Reabrindo visível...")
                 self._stop()
                 self.headless = False
                 self._start()
@@ -165,11 +310,34 @@ class PlaywrightUploader:
                 page.goto(STUDIO_URL, wait_until="domcontentloaded")
 
             logger.info("🔐 Faça login no YouTube Studio. Aguardando (até 3 min)...")
-            # Espera o Studio carregar após login
             page.wait_for_url(f"{STUDIO_URL}/**", timeout=180_000)
-            logger.info(f"✅ Login concluído para perfil '{self.profile}'. Sessão salva.")
+            logger.info(f"✅ Login concluído para '{self.profile}'.")
 
-    # ── Upload ────────────────────────────────────────────────────────────────
+    def login(self):
+        """Abre o browser para login manual e salva a sessão."""
+        self.headless = False
+        try:
+            self._start()
+            self._ensure_logged_in()
+            logger.info("✅ Sessão salva. Pode fechar o browser.")
+            time.sleep(3)
+        finally:
+            self._stop()
+
+    def reset_session(self) -> bool:
+        """Remove cookies salvos do perfil."""
+        import shutil
+        profile_path = _profile_dir(self.profile)
+        try:
+            shutil.rmtree(profile_path)
+            profile_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Sessão do perfil '{self.profile}' limpa.")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao limpar sessão: {e}")
+            return False
+
+    # ── Upload principal ──────────────────────────────────────────────────────
 
     def upload_video(
         self,
@@ -177,154 +345,136 @@ class PlaywrightUploader:
         title: str,
         description: str = "",
         tags: Optional[list] = None,
-        privacy: str = "public",        # "public" | "unlisted" | "private"
+        privacy: str = "public",
         made_for_kids: bool = False,
     ) -> Optional[str]:
-        """
-        Faz o upload completo de um vídeo no YouTube Studio.
-        Retorna o video_id do YouTube ou None em caso de falha.
-        """
         if not os.path.exists(clip_path):
             logger.error(f"Arquivo não encontrado: {clip_path}")
             return None
 
-        file_size_mb = os.path.getsize(clip_path) / 1024 / 1024
-        logger.info(f"📤 [Playwright] Upload: {Path(clip_path).name} ({file_size_mb:.1f} MB)")
+        size_mb = os.path.getsize(clip_path) / 1024 / 1024
+        logger.info(f"📤 [Playwright] {Path(clip_path).name} ({size_mb:.1f} MB) → {title[:50]}")
 
         try:
             self._start()
             self._ensure_logged_in()
+            page = self._page
+            tags = tags or []
 
-            page  = self._page
-            tags  = tags or []
+            # Simula navegação prévia (não vai direto para o upload)
+            time.sleep(_gauss_delay(1.2, 0.3))
+            self._scroll_page(random.randint(50, 200))
+            time.sleep(_gauss_delay(0.8, 0.2))
 
-            # ── 1. Abre o dialog de upload ────────────────────────────────────
+            # ── 1. Abre upload ────────────────────────────────────────────────
             page.goto(STUDIO_URL, wait_until="domcontentloaded")
-            time.sleep(_jitter(1.0, 2.0))
+            time.sleep(_gauss_delay(2.0, 0.5))
 
-            # Clica no botão "Criar" ou vai direto para /upload
-            upload_btn = page.locator("ytcp-button#create-icon, [aria-label='Criar'], button:has-text('Criar')")
-            if upload_btn.count() > 0:
-                upload_btn.first.click()
-                time.sleep(_jitter(0.5, 1.0))
-                # Seleciona "Enviar vídeos" no menu dropdown
-                upload_option = page.locator("tp-yt-paper-item:has-text('Enviar'), [role='menuitem']:has-text('Enviar')")
-                if upload_option.count() > 0:
-                    upload_option.first.click()
-                    time.sleep(_jitter(1.0, 1.5))
+            create_btn = page.locator("ytcp-button#create-icon, [aria-label='Criar'], button:has-text('Criar')")
+            if create_btn.count() > 0:
+                self._human_click(create_btn.first)
+                time.sleep(_gauss_delay(0.6, 0.15))
+                upload_opt = page.locator("tp-yt-paper-item:has-text('Enviar'), [role='menuitem']:has-text('Enviar')")
+                if upload_opt.count() > 0:
+                    self._human_click(upload_opt.first)
+                    time.sleep(_gauss_delay(1.2, 0.3))
             else:
                 page.goto(UPLOADS_URL, wait_until="domcontentloaded")
-                time.sleep(_jitter(1.5, 2.5))
+                time.sleep(_gauss_delay(2.0, 0.5))
 
             # ── 2. Sobe o arquivo ─────────────────────────────────────────────
             file_input = page.locator("input[type='file']")
             file_input.set_input_files(clip_path)
-            logger.info("📁 Arquivo selecionado. Aguardando processamento inicial...")
-            time.sleep(_jitter(3.0, 5.0))
-
-            # Aguarda o dialog de detalhes abrir
-            page.wait_for_selector("ytcp-uploads-dialog, #dialog", timeout=30_000)
-            time.sleep(_jitter(1.0, 2.0))
+            logger.info("📁 Arquivo enviado. Aguardando dialog de detalhes...")
+            # Aguarda o dialog abrir (tempo proporcional ao tamanho)
+            wait_upload = _gauss_delay(4.0 + size_mb * 0.05, 1.0)
+            time.sleep(wait_upload)
+            page.wait_for_selector("ytcp-uploads-dialog, #dialog", timeout=45_000)
+            time.sleep(_gauss_delay(1.5, 0.4))
 
             # ── 3. Título ─────────────────────────────────────────────────────
             title_input = page.locator("#title-textarea #input, ytcp-form-input-container #textbox").first
-            title_input.click()
-            time.sleep(_jitter(0.3, 0.6))
-            # Seleciona tudo e apaga (o YouTube pré-preenche com o nome do arquivo)
-            title_input.press("Control+a")
-            title_input.press("Backspace")
-            time.sleep(_jitter(0.2, 0.4))
-            _human_type(title_input, title)
-            time.sleep(_jitter(0.4, 0.8))
+            self._human_type(title_input, title)
 
             # ── 4. Descrição ──────────────────────────────────────────────────
             if description:
+                time.sleep(_gauss_delay(0.5, 0.15))
                 desc_input = page.locator("#description-textarea #input, ytcp-form-input-container #textbox").nth(1)
-                desc_input.click()
-                time.sleep(_jitter(0.3, 0.6))
-                _human_type(desc_input, description)
-                time.sleep(_jitter(0.4, 0.8))
+                self._human_type(desc_input, description)
 
             # ── 5. Made for kids ──────────────────────────────────────────────
-            if made_for_kids:
-                kids_yes = page.locator("#made-for-kids-group tp-yt-paper-radio-button[name='MADE_FOR_KIDS']")
-                if kids_yes.count() > 0:
-                    kids_yes.click()
-            else:
-                kids_no = page.locator("#made-for-kids-group tp-yt-paper-radio-button[name='NOT_MADE_FOR_KIDS']")
-                if kids_no.count() > 0:
-                    kids_no.click()
-            time.sleep(_jitter(0.3, 0.6))
+            time.sleep(_gauss_delay(0.6, 0.15))
+            kids_sel = "MADE_FOR_KIDS" if made_for_kids else "NOT_MADE_FOR_KIDS"
+            kids_btn = page.locator(f"tp-yt-paper-radio-button[name='{kids_sel}']")
+            if kids_btn.count() > 0:
+                self._human_click(kids_btn.first)
 
-            # ── 6. Mais opções (tags) ─────────────────────────────────────────
+            # ── 6. Tags (Mais opções) ─────────────────────────────────────────
             if tags:
-                more_options = page.locator("ytcp-button#toggle-button, button:has-text('Mais opções')")
-                if more_options.count() > 0:
-                    more_options.first.click()
-                    time.sleep(_jitter(0.8, 1.5))
+                time.sleep(_gauss_delay(0.8, 0.2))
+                more_btn = page.locator("ytcp-button#toggle-button, button:has-text('Mais opções')")
+                if more_btn.count() > 0:
+                    self._human_click(more_btn.first)
+                    time.sleep(_gauss_delay(1.0, 0.25))
 
-                    tags_input = page.locator("input[placeholder*='tag'], ytcp-free-text-chip-bar input")
-                    if tags_input.count() > 0:
-                        for tag in tags[:30]:   # YouTube suporta até 500 chars de tags totais
-                            tags_input.first.type(tag, delay=50)
-                            tags_input.first.press("Enter")
-                            time.sleep(_jitter(0.1, 0.3))
+                    tag_input = page.locator("input[placeholder*='tag'], ytcp-free-text-chip-bar input")
+                    if tag_input.count() > 0:
+                        for tag in tags[:30]:
+                            tag_input.first.type(tag, delay=random.randint(50, 120))
+                            tag_input.first.press("Enter")
+                            time.sleep(_gauss_delay(0.2, 0.07))
 
-            time.sleep(_jitter(0.5, 1.0))
-
-            # ── 7. Avança para tela de visibilidade (2 cliques em "Próximo") ──
-            for step_label in ["Próximo", "Próximo", "Próximo"]:
-                next_btn = page.locator(f"ytcp-button#next-button, button:has-text('{step_label}')")
+            # ── 7. Avança pelas telas (3× Próximo) ───────────────────────────
+            for _ in range(3):
+                time.sleep(_gauss_delay(1.2, 0.3))
+                next_btn = page.locator("ytcp-button#next-button")
                 if next_btn.count() > 0:
-                    next_btn.first.click()
-                    time.sleep(_jitter(1.0, 2.0))
+                    self._human_click(next_btn.first)
 
             # ── 8. Visibilidade ───────────────────────────────────────────────
-            privacy_map = {
-                "public":   "PUBLIC",
-                "unlisted": "UNLISTED",
-                "private":  "PRIVATE",
-            }
-            privacy_val = privacy_map.get(privacy, "PUBLIC")
-            visibility_radio = page.locator(f"tp-yt-paper-radio-button[name='{privacy_val}']")
-            if visibility_radio.count() > 0:
-                visibility_radio.click()
-                time.sleep(_jitter(0.5, 1.0))
+            time.sleep(_gauss_delay(1.0, 0.25))
+            privacy_map = {"public": "PUBLIC", "unlisted": "UNLISTED", "private": "PRIVATE"}
+            vis_radio = page.locator(f"tp-yt-paper-radio-button[name='{privacy_map.get(privacy, 'PUBLIC')}']")
+            if vis_radio.count() > 0:
+                self._human_click(vis_radio.first)
 
             # ── 9. Publicar ───────────────────────────────────────────────────
+            time.sleep(_gauss_delay(1.0, 0.3))
             publish_btn = page.locator("ytcp-button#done-button, button:has-text('Publicar'), button:has-text('Salvar')")
-            publish_btn.first.click()
-            logger.info("🚀 Botão Publicar clicado. Aguardando confirmação...")
-            time.sleep(_jitter(3.0, 6.0))
+            self._human_click(publish_btn.first)
+            logger.info("🚀 Publicando...")
+            time.sleep(_gauss_delay(5.0, 1.2))
 
-            # ── 10. Extrai o video_id da URL de confirmação ───────────────────
-            yt_video_id = None
+            # ── 10. Extrai video_id ───────────────────────────────────────────
+            yt_id = None
             try:
-                page.wait_for_url(r".*studio\.youtube\.com/video/*/edit*", timeout=20_000)
-                match = re.search(r"/video/([a-zA-Z0-9_-]{8,})/", page.url)
-                if match:
-                    yt_video_id = match.group(1)
+                page.wait_for_url(r".*studio\.youtube\.com/video/*/edit*", timeout=25_000)
+                m = re.search(r"/video/([a-zA-Z0-9_-]{8,})/", page.url)
+                if m:
+                    yt_id = m.group(1)
             except Exception:
-                # Tenta extrair de links de confirmação no dialog
                 links = page.locator("a[href*='youtube.com/watch'], a[href*='youtu.be']")
                 if links.count() > 0:
                     href = links.first.get_attribute("href") or ""
-                    match = re.search(r"[?&v=]([a-zA-Z0-9_-]{8,})|youtu\.be/([a-zA-Z0-9_-]{8,})", href)
-                    if match:
-                        yt_video_id = match.group(1) or match.group(2)
+                    m = re.search(r"[?&v=]([a-zA-Z0-9_-]{8,})|youtu\.be/([a-zA-Z0-9_-]{8,})", href)
+                    if m:
+                        yt_id = m.group(1) or m.group(2)
 
-            if yt_video_id:
-                logger.info(f"✅ Publicado! https://youtube.com/shorts/{yt_video_id}")
+            if yt_id:
+                logger.info(f"✅ Publicado: https://youtube.com/shorts/{yt_id}")
             else:
-                logger.warning("⚠️ Upload concluído mas não conseguiu extrair o video_id.")
+                logger.warning("⚠️ Upload concluído mas não extraiu o video_id.")
 
-            return yt_video_id
+            return yt_id
 
         except Exception as e:
-            logger.error(f"❌ Erro no upload via Playwright: {e}", exc_info=True)
+            logger.error(f"❌ Erro no upload: {e}", exc_info=True)
             return None
         finally:
             self._stop()
+
+    def close(self):
+        self._stop()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -333,55 +483,79 @@ class PlaywrightUploader:
 
 class SeleniumUploader:
     """
-    Fallback para Playwright — mesma lógica, usando Selenium + ChromeDriver.
+    Fallback com Selenium + undetected-chromedriver (recomendado sobre webdriver-manager).
 
-    Setup:
-        pip install selenium webdriver-manager
-
-    Usa um user-data-dir persistente (igual ao Playwright), então o login
-    também é feito só uma vez por perfil.
+    pip install undetected-chromedriver
     """
 
     def __init__(
         self,
         profile: str = "default",
-        headless: bool = True,
+        headless: bool = False,   # headless é detectável no Selenium — use False
         timeout: int = 60,
     ):
         self.profile  = profile
         self.headless = headless
         self.timeout  = timeout
         self._driver  = None
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+        self._ua      = random.choice(_USER_AGENTS)
 
     def _start(self):
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.chrome.options import Options
-        from webdriver_manager.chrome import ChromeDriverManager
+        try:
+            # undetected-chromedriver é muito mais furtivo que selenium puro
+            import undetected_chromedriver as uc
+            profile_path = str(_profile_dir(self.profile))
 
-        profile_path = str(_profile_dir(self.profile))
-        opts = Options()
+            opts = uc.ChromeOptions()
+            opts.add_argument(f"--user-data-dir={profile_path}")
+            opts.add_argument("--no-first-run")
+            opts.add_argument("--no-default-browser-check")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument(f"--window-size={random.randint(1280,1440)},{random.randint(768,900)}")
+            opts.add_argument(f"--lang=pt-BR")
 
-        if self.headless:
-            opts.add_argument("--headless=new")
+            self._driver = uc.Chrome(options=opts, headless=self.headless)
+            self._driver.implicitly_wait(self.timeout)
 
-        opts.add_argument(f"--user-data-dir={profile_path}")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--no-first-run")
-        opts.add_argument("--no-default-browser-check")
-        opts.add_argument("--window-size=1280,800")
-        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        opts.add_experimental_option("useAutomationExtension", False)
+            # Injeta stealth JS logo após iniciar
+            self._driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": _STEALTH_JS
+            })
 
-        service = Service(ChromeDriverManager().install())
-        self._driver = webdriver.Chrome(service=service, options=opts)
-        self._driver.implicitly_wait(self.timeout)
-        # Remove a flag navigator.webdriver
-        self._driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
+        except ImportError:
+            # Fallback: selenium puro com patches manuais
+            logger.warning("undetected-chromedriver não encontrado. Usando selenium puro (menos furtivo).")
+            logger.warning("Instale com: pip install undetected-chromedriver")
+            from selenium import webdriver
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.chrome.options import Options
+            from webdriver_manager.chrome import ChromeDriverManager
+
+            profile_path = str(_profile_dir(self.profile))
+            opts = Options()
+            if self.headless:
+                opts.add_argument("--headless=new")
+
+            opts.add_argument(f"--user-data-dir={profile_path}")
+            opts.add_argument("--no-first-run")
+            opts.add_argument("--no-default-browser-check")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument(f"--user-agent={self._ua}")
+            opts.add_argument(f"--window-size={random.randint(1280,1440)},{random.randint(768,900)}")
+            opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            opts.add_experimental_option("useAutomationExtension", False)
+
+            service = Service(ChromeDriverManager().install())
+            self._driver = webdriver.Chrome(service=service, options=opts)
+            self._driver.implicitly_wait(self.timeout)
+
+            # Patches via CDP
+            self._driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": _STEALTH_JS
+            })
+            self._driver.execute_cdp_cmd("Network.setUserAgentOverride", {
+                "userAgent": self._ua
+            })
 
     def _stop(self):
         try:
@@ -391,45 +565,102 @@ class SeleniumUploader:
             pass
         self._driver = None
 
-    def _wait_for(self, by, selector, timeout=None):
+    def _move_mouse_to(self, element):
+        """Move o mouse com ActionChains simulando trajetória humana."""
+        from selenium.webdriver.common.action_chains import ActionChains
+        try:
+            loc = element.location
+            size = element.size
+            tx = loc["x"] + size["width"]  * random.uniform(0.3, 0.7)
+            ty = loc["y"] + size["height"] * random.uniform(0.3, 0.7)
+
+            # Move em etapas com offsets aleatórios
+            actions = ActionChains(self._driver)
+            steps = random.randint(5, 12)
+            for i in range(steps):
+                ox = random.randint(-8, 8)
+                oy = random.randint(-8, 8)
+                actions.move_by_offset(ox, oy)
+            actions.move_to_element(element)
+            actions.perform()
+            time.sleep(_gauss_delay(0.15, 0.05))
+        except Exception:
+            pass
+
+    def _human_click(self, element):
+        self._scroll_to(element)
+        time.sleep(_gauss_delay(0.3, 0.1))
+        self._move_mouse_to(element)
+        element.click()
+        time.sleep(_gauss_delay(0.4, 0.15))
+
+    def _human_type(self, element, text: str):
+        from selenium.webdriver.common.keys import Keys
+        self._human_click(element)
+        element.send_keys(Keys.CONTROL + "a")
+        time.sleep(_gauss_delay(0.1, 0.04))
+        element.send_keys(Keys.BACKSPACE)
+        time.sleep(_gauss_delay(0.15, 0.05))
+
+        for i, ch in enumerate(text):
+            element.send_keys(ch)
+            time.sleep(random.uniform(0.04, 0.14))
+            if ch == " ":
+                time.sleep(_gauss_delay(0.07, 0.03))
+            if i > 0 and i % random.randint(8, 20) == 0:
+                time.sleep(_gauss_delay(0.25, 0.1))
+
+    def _scroll_to(self, element):
+        self._driver.execute_script(
+            "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element
+        )
+        time.sleep(_gauss_delay(0.4, 0.12))
+
+    def _find(self, by, sel, timeout=None):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         t = timeout or self.timeout
         return WebDriverWait(self._driver, t).until(
-            EC.presence_of_element_located((by, selector))
+            EC.presence_of_element_located((by, sel))
         )
 
-    def _slow_type(self, element, text: str):
-        """Digita com delay humano."""
-        for ch in text:
-            element.send_keys(ch)
-            time.sleep(random.uniform(0.04, 0.12))
-
-    # ── Login guard ───────────────────────────────────────────────────────────
-
     def _ensure_logged_in(self):
+        from selenium.webdriver.support.ui import WebDriverWait
         self._driver.get(STUDIO_URL)
-        time.sleep(_jitter(2.0, 3.0))
+        time.sleep(_gauss_delay(2.5, 0.5))
 
         if "accounts.google.com" in self._driver.current_url or "signin" in self._driver.current_url:
             if self.headless:
-                logger.warning(
-                    f"⚠️  Perfil '{self.profile}' não logado. "
-                    "Reiniciando em modo visível para autenticação manual..."
-                )
+                logger.warning(f"⚠️ Perfil '{self.profile}' não logado. Reabrindo visível...")
                 self._stop()
                 self.headless = False
                 self._start()
                 self._driver.get(STUDIO_URL)
 
             logger.info("🔐 Faça login no YouTube Studio. Aguardando (até 3 min)...")
-            from selenium.webdriver.support.ui import WebDriverWait
             WebDriverWait(self._driver, 180).until(
                 lambda d: STUDIO_URL in d.current_url and "accounts.google" not in d.current_url
             )
-            logger.info(f"✅ Login concluído para perfil '{self.profile}'. Sessão salva.")
+            logger.info(f"✅ Login concluído para '{self.profile}'.")
 
-    # ── Upload ────────────────────────────────────────────────────────────────
+    def login(self):
+        self.headless = False
+        try:
+            self._start()
+            self._ensure_logged_in()
+            time.sleep(3)
+        finally:
+            self._stop()
+
+    def reset_session(self) -> bool:
+        import shutil
+        try:
+            shutil.rmtree(_profile_dir(self.profile))
+            _profile_dir(self.profile).mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao limpar sessão: {e}")
+            return False
 
     def upload_video(
         self,
@@ -447,172 +678,162 @@ class SeleniumUploader:
             logger.error(f"Arquivo não encontrado: {clip_path}")
             return None
 
-        file_size_mb = os.path.getsize(clip_path) / 1024 / 1024
-        logger.info(f"📤 [Selenium] Upload: {Path(clip_path).name} ({file_size_mb:.1f} MB)")
+        size_mb = os.path.getsize(clip_path) / 1024 / 1024
+        logger.info(f"📤 [Selenium] {Path(clip_path).name} ({size_mb:.1f} MB) → {title[:50]}")
 
         try:
             self._start()
             self._ensure_logged_in()
-
             tags = tags or []
-            driver = self._driver
+
+            self._driver.get(STUDIO_URL)
+            time.sleep(_gauss_delay(2.0, 0.5))
+
+            # Simula leitura da página antes de clicar
+            self._driver.execute_script(f"window.scrollBy({{top: {random.randint(50,200)}, behavior: 'smooth'}})")
+            time.sleep(_gauss_delay(1.0, 0.3))
 
             # ── 1. Abre upload ────────────────────────────────────────────────
-            driver.get(STUDIO_URL)
-            time.sleep(_jitter(1.5, 2.5))
-
-            # Seleciona o input de arquivo (pode estar oculto)
-            file_input = self._wait_for(By.CSS_SELECTOR, "input[type='file']")
+            file_input = self._find(By.CSS_SELECTOR, "input[type='file']")
             file_input.send_keys(os.path.abspath(clip_path))
-            logger.info("📁 Arquivo selecionado.")
-            time.sleep(_jitter(3.0, 5.0))
+            logger.info("📁 Arquivo enviado.")
+            time.sleep(_gauss_delay(4.0 + size_mb * 0.05, 1.0))
 
             # ── 2. Título ─────────────────────────────────────────────────────
-            title_el = self._wait_for(By.CSS_SELECTOR, "#title-textarea #input")
-            title_el.click()
-            title_el.send_keys(Keys.CONTROL + "a")
-            title_el.send_keys(Keys.BACKSPACE)
-            time.sleep(_jitter(0.2, 0.4))
-            self._slow_type(title_el, title)
-            time.sleep(_jitter(0.4, 0.8))
+            title_el = self._find(By.CSS_SELECTOR, "#title-textarea #input")
+            self._human_type(title_el, title)
 
             # ── 3. Descrição ──────────────────────────────────────────────────
             if description:
-                desc_els = driver.find_elements(By.CSS_SELECTOR, "#description-textarea #input")
+                time.sleep(_gauss_delay(0.5, 0.15))
+                desc_els = self._driver.find_elements(By.CSS_SELECTOR, "#description-textarea #input")
                 if desc_els:
-                    desc_els[0].click()
-                    self._slow_type(desc_els[0], description)
-                    time.sleep(_jitter(0.4, 0.8))
+                    self._human_type(desc_els[0], description)
 
             # ── 4. Made for kids ──────────────────────────────────────────────
-            kids_selector = (
-                "tp-yt-paper-radio-button[name='MADE_FOR_KIDS']"
-                if made_for_kids else
-                "tp-yt-paper-radio-button[name='NOT_MADE_FOR_KIDS']"
-            )
-            kids_els = driver.find_elements(By.CSS_SELECTOR, kids_selector)
+            time.sleep(_gauss_delay(0.5, 0.15))
+            kids_sel = "MADE_FOR_KIDS" if made_for_kids else "NOT_MADE_FOR_KIDS"
+            kids_els = self._driver.find_elements(By.CSS_SELECTOR, f"tp-yt-paper-radio-button[name='{kids_sel}']")
             if kids_els:
-                kids_els[0].click()
-            time.sleep(_jitter(0.3, 0.6))
+                self._human_click(kids_els[0])
 
-            # ── 5. Mais opções / Tags ─────────────────────────────────────────
+            # ── 5. Tags ───────────────────────────────────────────────────────
             if tags:
-                more_btns = driver.find_elements(By.CSS_SELECTOR, "ytcp-button#toggle-button")
+                time.sleep(_gauss_delay(0.8, 0.2))
+                more_btns = self._driver.find_elements(By.CSS_SELECTOR, "ytcp-button#toggle-button")
                 if more_btns:
-                    more_btns[0].click()
-                    time.sleep(_jitter(0.8, 1.5))
-
-                    tag_inputs = driver.find_elements(By.CSS_SELECTOR, "ytcp-free-text-chip-bar input")
+                    self._human_click(more_btns[0])
+                    time.sleep(_gauss_delay(1.0, 0.25))
+                    tag_inputs = self._driver.find_elements(By.CSS_SELECTOR, "ytcp-free-text-chip-bar input")
                     if tag_inputs:
                         for tag in tags[:30]:
                             tag_inputs[0].send_keys(tag)
                             tag_inputs[0].send_keys(Keys.ENTER)
-                            time.sleep(_jitter(0.1, 0.3))
+                            time.sleep(_gauss_delay(0.2, 0.07))
 
-            time.sleep(_jitter(0.5, 1.0))
-
-            # ── 6. Avança pelas telas ─────────────────────────────────────────
+            # ── 6. Próximo × 3 ────────────────────────────────────────────────
             for _ in range(3):
-                next_btns = driver.find_elements(By.CSS_SELECTOR, "ytcp-button#next-button")
+                time.sleep(_gauss_delay(1.2, 0.3))
+                next_btns = self._driver.find_elements(By.CSS_SELECTOR, "ytcp-button#next-button")
                 if next_btns:
-                    next_btns[0].click()
-                    time.sleep(_jitter(1.0, 2.0))
+                    self._human_click(next_btns[0])
 
             # ── 7. Visibilidade ───────────────────────────────────────────────
+            time.sleep(_gauss_delay(1.0, 0.25))
             privacy_map = {"public": "PUBLIC", "unlisted": "UNLISTED", "private": "PRIVATE"}
-            privacy_val = privacy_map.get(privacy, "PUBLIC")
-            radio_els = driver.find_elements(By.CSS_SELECTOR, f"tp-yt-paper-radio-button[name='{privacy_val}']")
-            if radio_els:
-                radio_els[0].click()
-            time.sleep(_jitter(0.5, 1.0))
+            vis_els = self._driver.find_elements(
+                By.CSS_SELECTOR, f"tp-yt-paper-radio-button[name='{privacy_map.get(privacy, 'PUBLIC')}']"
+            )
+            if vis_els:
+                self._human_click(vis_els[0])
 
             # ── 8. Publicar ───────────────────────────────────────────────────
-            done_btns = driver.find_elements(By.CSS_SELECTOR, "ytcp-button#done-button")
+            time.sleep(_gauss_delay(1.0, 0.3))
+            done_btns = self._driver.find_elements(By.CSS_SELECTOR, "ytcp-button#done-button")
             if done_btns:
-                done_btns[0].click()
-            logger.info("🚀 Botão Publicar clicado.")
-            time.sleep(_jitter(4.0, 7.0))
+                self._human_click(done_btns[0])
+            logger.info("🚀 Publicando...")
+            time.sleep(_gauss_delay(5.0, 1.2))
 
             # ── 9. Extrai video_id ────────────────────────────────────────────
-            yt_video_id = None
-            match = re.search(r"/video/([a-zA-Z0-9_-]{8,})/", driver.current_url)
-            if match:
-                yt_video_id = match.group(1)
+            yt_id = None
+            m = re.search(r"/video/([a-zA-Z0-9_-]{8,})/", self._driver.current_url)
+            if m:
+                yt_id = m.group(1)
             else:
-                links = driver.find_elements(By.CSS_SELECTOR, "a[href*='youtube.com/watch'], a[href*='youtu.be']")
+                links = self._driver.find_elements(
+                    By.CSS_SELECTOR, "a[href*='youtube.com/watch'], a[href*='youtu.be']"
+                )
                 for link in links:
                     href = link.get_attribute("href") or ""
-                    m = re.search(r"[?&v=]([a-zA-Z0-9_-]{8,})|youtu\.be/([a-zA-Z0-9_-]{8,})", href)
-                    if m:
-                        yt_video_id = m.group(1) or m.group(2)
+                    mm = re.search(r"[?&v=]([a-zA-Z0-9_-]{8,})|youtu\.be/([a-zA-Z0-9_-]{8,})", href)
+                    if mm:
+                        yt_id = mm.group(1) or mm.group(2)
                         break
 
-            if yt_video_id:
-                logger.info(f"✅ Publicado! https://youtube.com/shorts/{yt_video_id}")
+            if yt_id:
+                logger.info(f"✅ Publicado: https://youtube.com/shorts/{yt_id}")
             else:
-                logger.warning("⚠️ Upload concluído mas não conseguiu extrair o video_id.")
+                logger.warning("⚠️ Upload concluído mas não extraiu o video_id.")
 
-            return yt_video_id
+            return yt_id
 
         except Exception as e:
-            logger.error(f"❌ Erro no upload via Selenium: {e}", exc_info=True)
+            logger.error(f"❌ Erro no upload: {e}", exc_info=True)
             return None
         finally:
             self._stop()
 
+    def close(self):
+        self._stop()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# INTERFACE UNIFICADA (usada pelo ClipWorker)
+# INTERFACE UNIFICADA
 # ══════════════════════════════════════════════════════════════════════════════
 
 class VideoUploader:
     """
     Interface de alto nível para o ClipWorker.
     Tenta Playwright primeiro; cai para Selenium se não disponível.
-
-    Uso no ClipWorker:
-        self.uploader = VideoUploader(profile="meu_canal", interval_seconds=300)
-        yt_id = self.uploader.upload_after_render(job, final_clip_path)
     """
 
     def __init__(
         self,
         profile: str = "default",
-        engine: str = "auto",           # "playwright" | "selenium" | "auto"
+        engine: str = "auto",
         headless: bool = True,
         privacy: str = "public",
         made_for_kids: bool = False,
-        interval_seconds: float = 0.0,  # delay entre uploads (0 = sem espera)
+        interval_seconds: float = 0.0,
     ):
-        self.profile           = profile
-        self.privacy           = privacy
-        self.made_for_kids     = made_for_kids
-        self.interval_seconds  = interval_seconds
-        self._last_upload_at   = 0.0
-        self._engine_cls       = self._resolve_engine(engine, headless)
+        self.profile          = profile
+        self.privacy          = privacy
+        self.made_for_kids    = made_for_kids
+        self.interval_seconds = interval_seconds
+        self._last_upload_at  = 0.0
+        self._engine_cls      = self._resolve_engine(engine, headless)
 
     def _resolve_engine(self, engine: str, headless: bool):
         if engine == "playwright":
             return lambda: PlaywrightUploader(profile=self.profile, headless=headless)
         if engine == "selenium":
             return lambda: SeleniumUploader(profile=self.profile, headless=headless)
-
-        # auto: tenta Playwright, cai para Selenium
         try:
-            import playwright  # noqa: F401
+            import playwright  # noqa
             logger.info("🎭 Engine: Playwright")
             return lambda: PlaywrightUploader(profile=self.profile, headless=headless)
         except ImportError:
             pass
         try:
-            import selenium  # noqa: F401
+            import selenium  # noqa
             logger.info("🌐 Engine: Selenium (fallback)")
             return lambda: SeleniumUploader(profile=self.profile, headless=headless)
         except ImportError:
             raise RuntimeError(
-                "Nenhum engine de browser disponível.\n"
+                "Nenhum engine disponível.\n"
                 "Instale: pip install playwright && playwright install chromium\n"
-                "      ou: pip install selenium webdriver-manager"
+                "      ou: pip install undetected-chromedriver"
             )
 
     def _respect_interval(self):
@@ -621,6 +842,7 @@ class VideoUploader:
         elapsed   = time.time() - self._last_upload_at
         remaining = self.interval_seconds - elapsed
         if remaining > 0:
+            # Jitter de ±20% no intervalo (não esperar exatamente sempre)
             wait = remaining + random.uniform(-remaining * 0.2, remaining * 0.2)
             wait = max(1.0, wait)
             logger.info(f"⏳ Aguardando {wait:.0f}s antes do próximo upload...")
@@ -632,17 +854,6 @@ class VideoUploader:
         clip_path: str,
         extra_metadata: Optional[dict] = None,
     ) -> Optional[str]:
-        """
-        Ponto de entrada principal — chamado pelo ClipWorker após render concluído.
-
-        Parâmetros:
-            job           : dict do job (campos: operator_title, operator_notes,
-                            operator_hashtags, video_id, start_time, end_time)
-            clip_path     : caminho absoluto do .mp4 renderizado
-            extra_metadata: override opcional de title/description/tags
-
-        Retorna o youtube_video_id ou None.
-        """
         if not clip_path or not os.path.exists(clip_path):
             logger.error(f"upload_after_render: arquivo não existe: {clip_path}")
             return None
@@ -660,48 +871,13 @@ class VideoUploader:
 
         uploader = self._engine_cls()
         yt_id = uploader.upload_video(
-            clip_path   = clip_path,
-            title       = title,
-            description = description,
-            tags        = tags,
-            privacy     = self.privacy,
+            clip_path     = clip_path,
+            title         = title,
+            description   = description,
+            tags          = tags,
+            privacy       = self.privacy,
             made_for_kids = self.made_for_kids,
         )
 
         self._last_upload_at = time.time()
         return yt_id
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# INTEGRAÇÃO NO ClipWorker  (copiar para clip_worker.py)
-# ══════════════════════════════════════════════════════════════════════════════
-#
-# from uploader import VideoUploader
-#
-# class ClipWorker:
-#     def __init__(self, ..., upload_enabled=False, upload_profile="default",
-#                  upload_engine="auto", upload_headless=True, interval_seconds=300):
-#         ...
-#         self.upload_enabled = upload_enabled
-#         self.uploader = VideoUploader(
-#             profile          = upload_profile,
-#             engine           = upload_engine,   # "playwright" | "selenium" | "auto"
-#             headless         = upload_headless,
-#             privacy          = "public",
-#             interval_seconds = interval_seconds,
-#         )
-#
-#     def process_job(self, job):
-#         ...
-#         if os.path.exists(final_clip_path):
-#             database.update_job_status(job_id, "DONE", output_path=final_clip_path, metrics=metrics)
-#
-#             if self.upload_enabled or job.get("upload_after_render"):
-#                 database.update_job_status(job_id, "UPLOADING")
-#                 yt_id = self.uploader.upload_after_render(job, final_clip_path)
-#                 if yt_id:
-#                     database.update_job_youtube_id(job_id, yt_id)
-#                     database.update_job_status(job_id, "PUBLISHED")
-#                     logger.info(f"🎬 https://youtube.com/shorts/{yt_id}")
-#                 else:
-#                     logger.warning(f"⚠️ Upload falhou (job {job_id})")

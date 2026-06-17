@@ -1,6 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 analyzer.py - Integração com Ollama para análise inteligente de cortes virais
+
+CORREÇÕES APLICADAS (limites de duração):
+  1. VIRAL_ANALYSIS_SYSTEM_PROMPT substituído por build_system_prompt(min, max)
+     → O LLM agora recebe o intervalo correto de duração em vez de "20 a 60 segundos" fixo.
+  2. OllamaAnalyzer.__init__: novos parâmetros min_duration / max_duration.
+  3. OllamaAnalyzer._parse_cuts: filtro "duration > 90" substituído por limites dinâmicos.
+  4. HeuristicAnalyzer.__init__: novos parâmetros min_duration / max_duration.
+  5. HeuristicAnalyzer.analyze: window_size e step agora derivam dos parâmetros da instância.
+  6. calculate_python_score: penalidade de duração agora usa min_duration / max_duration externos.
+  7. rank_and_filter_cuts: sem alteração de assinatura (já lia do config), mas documentado.
 """
 
 import json
@@ -15,21 +25,35 @@ from utils import parse_ollama_json_response, clamp
 
 logger = logging.getLogger("viral_cutter.analyzer")
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# PROMPT PRINCIPAL DO SISTEMA
+# BUILDER DO PROMPT DO SISTEMA  (substitui a constante VIRAL_ANALYSIS_SYSTEM_PROMPT)
 # ─────────────────────────────────────────────────────────────────────────────
 
-VIRAL_ANALYSIS_SYSTEM_PROMPT = """Você é um editor de vídeos curtos especializado em retenção e viralização.
-Sua tarefa é encontrar trechos de 20 a 60 segundos com altíssimo potencial de retenção.
+def build_system_prompt(min_duration: float, max_duration: float) -> str:
+    """
+    Constrói o prompt de sistema do analisador viral com os limites de duração
+    corretos para este pipeline, em vez de usar valores fixos de "20 a 60 segundos".
+
+    Args:
+        min_duration: Duração mínima em segundos (ex: 20.0)
+        max_duration: Duração máxima em segundos (ex: 300.0)
+
+    Returns:
+        String de prompt pronta para envio ao modelo.
+    """
+    return f"""Você é um editor de vídeos curtos especializado em retenção e viralização.
+Sua tarefa é encontrar trechos de {min_duration:.0f} a {max_duration:.0f} segundos com altíssimo potencial de retenção.
 
 REGRAS CRÍTICAS DE RETENÇÃO:
 1. O GANCHO (HOOK) É TUDO: Os primeiros 3 segundos do corte DEVEM conter uma frase de impacto, uma pergunta instigante ou uma afirmação polêmica.
 2. Identifique momentos emocionantes, polêmicos ou informativos.
 3. STORYTELLING: Priorize trechos com início (gancho), meio e fim.
+4. A duração dos cortes DEVE estar entre {min_duration:.0f}s e {max_duration:.0f}s — nunca fora desse intervalo.
 
 Formato JSON estrito:
 [
-  {
+  {{
     "start": 0.0,
     "end": 0.0,
     "duration": 0.0,
@@ -38,9 +62,14 @@ Formato JSON estrito:
     "summary": "resumo",
     "motivo": "por que isso vai viralizar",
     "theme": "tema sugerido (ex: motivational, dramatic, funny, fast-paced)"
-  }
+  }}
 ]
 - RESPONDA APENAS O JSON, SEM MARKDOWN OU COMENTÁRIOS."""
+
+
+# Mantém a constante legada apontando para o builder com valores padrão,
+# para compatibilidade com qualquer importação direta existente.
+VIRAL_ANALYSIS_SYSTEM_PROMPT = build_system_prompt(20.0, 300.0)
 
 
 @dataclass
@@ -84,6 +113,9 @@ class ViralCut:
 class OllamaAnalyzer:
     """
     Cliente para análise de cortes virais via Ollama.
+
+    CORREÇÃO: min_duration e max_duration agora são parâmetros do construtor e
+    propagados para o prompt do sistema e para o filtro interno de duração.
     """
 
     def __init__(
@@ -93,13 +125,25 @@ class OllamaAnalyzer:
         timeout: int = 300,
         max_retries: int = 3,
         retry_delay: float = 5.0,
+        min_duration: float = 20.0,    # NOVO: duração mínima configurável
+        max_duration: float = 300.0,   # NOVO: duração máxima configurável (era implicitamente 60s via prompt)
     ):
         self.model = model
         self.host = host.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.min_duration = min_duration
+        self.max_duration = max_duration
         self._api_url = f"{self.host}/api/generate"
+
+        # Prompt construído uma vez com os limites corretos
+        self._system_prompt = build_system_prompt(min_duration, max_duration)
+
+        logger.info(
+            f"OllamaAnalyzer inicializado | modelo={model} | "
+            f"duração={min_duration:.0f}s–{max_duration:.0f}s"
+        )
 
     def _make_request(self, prompt: str) -> str:
         """
@@ -129,7 +173,7 @@ class OllamaAnalyzer:
         full_response = ""
         start_time = time.time()
         chunks_received = 0
-        
+
         try:
             logger.info("  > Enviando dados ao Ollama e aguardando resposta...")
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
@@ -139,18 +183,18 @@ class OllamaAnalyzer:
                         text_part = chunk.get("response", "")
                         full_response += text_part
                         chunks_received += 1
-                        
+
                         # Feedback visual frequente (a cada 20 pedaços de texto)
                         if chunks_received % 20 == 0:
                             logger.info(f"  ... Analisando ({len(full_response)} caracteres recebidos)")
-                            
+
                         if chunk.get("done"):
                             break
-            
+
             duration = time.time() - start_time
             logger.info(f"  > Resposta completa recebida em {duration:.1f}s")
             return full_response
-            
+
         except Exception as e:
             logger.error(f"Erro na requisição streaming: {e}")
             raise
@@ -174,7 +218,9 @@ class OllamaAnalyzer:
         Returns:
             Lista de ViralCut identificados no bloco
         """
-        prompt = f"""{VIRAL_ANALYSIS_SYSTEM_PROMPT}
+        # CORREÇÃO: usa self._system_prompt (construído com min/max_duration reais)
+        # em vez da constante VIRAL_ANALYSIS_SYSTEM_PROMPT com "20 a 60 segundos" fixo.
+        prompt = f"""{self._system_prompt}
 
 ----------------------------------------
 TRANSCRIÇÃO PARA ANÁLISE (bloco {block_index + 1}):
@@ -183,7 +229,8 @@ Intervalo total do bloco: {block_start:.1f}s até {block_end:.1f}s
 {block_text}
 
 ----------------------------------------
-Analise o trecho acima e retorne APENAS o JSON com os cortes virais identificados."""
+Analise o trecho acima e retorne APENAS o JSON com os cortes virais identificados.
+Lembre-se: cada corte deve ter entre {self.min_duration:.0f}s e {self.max_duration:.0f}s."""
 
         last_error: Optional[Exception] = None
 
@@ -238,9 +285,23 @@ Analise o trecho acima e retorne APENAS o JSON com os cortes virais identificado
     ) -> list[ViralCut]:
         """
         Converte a resposta do modelo em objetos ViralCut validados.
+
+        CORREÇÃO: O filtro de duração era "duration < 15 or duration > 90" com valores
+        completamente fixos. Agora usa self.min_duration e self.max_duration com uma
+        margem de tolerância de 10% para absorver pequenas imprecisões do LLM.
         """
         cuts = []
         seen_ranges: list[tuple[float, float]] = []
+
+        # Limites dinâmicos: margem de 10% para tolerar imprecisões do LLM
+        # sem descartar cortes válidos próximos do limite configurado.
+        hard_min = self.min_duration * 0.80   # ex: min=20s → aceita a partir de 16s
+        hard_max = self.max_duration * 1.10   # ex: max=300s → aceita até 330s
+
+        logger.debug(
+            f"_parse_cuts: limites dinâmicos = [{hard_min:.1f}s, {hard_max:.1f}s] "
+            f"(config: {self.min_duration:.0f}s–{self.max_duration:.0f}s ±10%)"
+        )
 
         for item in cuts_data:
             try:
@@ -256,10 +317,12 @@ Analise o trecho acima e retorne APENAS o JSON com os cortes virais identificado
                     )
                     continue
 
-                # Valida duração
-                if duration < 15 or duration > 90:
+                # CORREÇÃO: validação de duração agora usa limites dinâmicos,
+                # não mais os valores fixos 15 e 90.
+                if duration < hard_min or duration > hard_max:
                     logger.warning(
-                        f"Corte com duração inválida ignorado: {duration:.1f}s"
+                        f"Corte com duração fora dos limites ignorado: {duration:.1f}s "
+                        f"(limites aceitos: {hard_min:.1f}s–{hard_max:.1f}s)"
                     )
                     continue
 
@@ -336,10 +399,26 @@ class HeuristicAnalyzer:
     """
     Motor de análise avançado baseado em padrões linguísticos e heurísticas de retenção.
     Ideal para processamento ultra-rápido ou quando não há acesso ao Ollama.
+
+    CORREÇÃO: window_size e step eram valores fixos (45s e 25s). Agora derivam de
+    min_duration e max_duration passados no construtor, permitindo cortes longos.
     """
-    def __init__(self, top_n: int = 10):
+
+    def __init__(
+        self,
+        top_n: int = 10,
+        min_duration: float = 20.0,    # NOVO: duração mínima configurável
+        max_duration: float = 300.0,   # NOVO: duração máxima configurável (era 45s fixo)
+    ):
         self.top_n = top_n
-        
+        self.min_duration = min_duration
+        self.max_duration = max_duration
+
+        logger.info(
+            f"HeuristicAnalyzer inicializado | "
+            f"duração={min_duration:.0f}s–{max_duration:.0f}s"
+        )
+
         # Categorias de palavras-chave para scoring diferenciado
         self.keywords = {
             "polêmica": ["absurdo", "mentira", "errado", "ridículo", "pare", "chega", "odeio", "vergonha", "farsa"],
@@ -348,51 +427,72 @@ class HeuristicAnalyzer:
             "impacto": ["incrível", "choque", "surpresa", "loucura", "mudou", "transformou", "impossível", "nunca", "sempre"],
             "urgência": ["agora", "hoje", "rápido", "urgente", "pare", "atenção", "importante", "cuidado"]
         }
-        
+
         # Gatilhos de início de frase (Hooks heurísticos)
         self.hook_triggers = [
-            "você sabia", "o grande erro", "muita gente", "o segredo para", "pare de", 
+            "você sabia", "o grande erro", "muita gente", "o segredo para", "pare de",
             "eu vou te contar", "a verdade sobre", "nunca faça", "sempre que"
         ]
 
     def analyze(self, transcript_segments: list) -> list[ViralCut]:
         """
         Gera cortes baseados em padrões de retenção sem usar IA.
+
+        CORREÇÃO: window_size era 45.0 fixo. Agora usa self.max_duration.
+        O step é calculado dinamicamente: no mínimo self.min_duration,
+        no máximo 50% da janela, para garantir overlap razoável sem saltos grandes.
         """
-        logger.info("Iniciando análise heurística avançada...")
+        logger.info(
+            f"Iniciando análise heurística | "
+            f"janela={self.max_duration:.0f}s | "
+            f"min={self.min_duration:.0f}s"
+        )
         cuts = []
-        
+
         if not transcript_segments:
             return []
-            
+
         total_duration = transcript_segments[-1].end
-        window_size = 45.0  # Janela de análise
-        step = 25.0         # Deslocamento (overlap alto para não perder o hook)
-        
-        for start_t in range(0, int(total_duration), int(step)):
+
+        # CORREÇÃO PRINCIPAL:
+        # Antes: window_size = 45.0 (fixo) / step = 25.0 (fixo)
+        # Agora: window_size = max_duration configurado pelo usuário
+        #        step = max(min_duration, window_size * 0.4) para overlap de 60%
+        #        Isso garante que segmentos longos sejam gerados E que haja
+        #        sobreposição suficiente para não perder momentos no início/fim.
+        window_size = self.max_duration
+        step = max(self.min_duration, window_size * 0.4)
+
+        logger.debug(f"Heurística: window_size={window_size:.1f}s, step={step:.1f}s")
+
+        for start_t in self._frange(0, total_duration, step):
             end_t = start_t + window_size
-            
+
             # 1. Filtra segmentos na janela
             segs = [s for s in transcript_segments if s.start >= start_t and s.end <= end_t]
-            if not segs: continue
-                
+            if not segs:
+                continue
+
             text = " ".join(s.text.lower() for s in segs)
             words = text.split()
-            if len(words) < 25: continue # Muito pouco conteúdo
-            
+
+            # Mínimo de palavras proporcional à duração esperada
+            # (~2 palavras/segundo é ritmo normal de fala)
+            min_words = max(25, int(self.min_duration * 1.5))
+            if len(words) < min_words:
+                continue
+
             # 2. Scoring por Palavras-Chave (Power Words)
-            score = 35.0 # Base inicial
+            score = 35.0  # Base inicial
             for category, kws in self.keywords.items():
                 hits = sum(1 for kw in kws if kw in text)
-                score += min(hits * 6, 30) # Máximo 30 pontos por categoria
-                
+                score += min(hits * 6, 30)  # Máximo 30 pontos por categoria
+
             # 3. Análise de Pontuação (Entusiasmo/Interação)
-            # Whisper costuma colocar pontuação. Muitos ? ou ! indicam energia.
             energy_hits = text.count("?") + text.count("!")
             score += min(energy_hits * 5, 20)
-            
+
             # 4. Detecção de Hooks (Gatilhos de Início)
-            # Se o primeiro segmento do bloco contiver um gatilho, ganha bônus.
             first_text = segs[0].text.lower()
             if any(trigger in first_text for trigger in self.hook_triggers):
                 score += 25
@@ -400,15 +500,19 @@ class HeuristicAnalyzer:
 
             # 5. Speech Rate (Velocidade de Fala)
             # Ideal para retenção: entre 130 e 160 palavras por minuto (2.1 a 2.6 palavras/s)
-            duration = segs[-1].end - segs[0].start
-            wps = len(words) / duration if duration > 0 else 0
+            actual_duration = segs[-1].end - segs[0].start
+            wps = len(words) / actual_duration if actual_duration > 0 else 0
             if 2.0 <= wps <= 3.0:
-                score += 10 # Ritmo bom
+                score += 10  # Ritmo bom
             elif wps > 4.0:
-                score -= 10 # Rápido demais (ruído?)
+                score -= 10  # Rápido demais (ruído?)
 
-            # 6. Gerador de Título/Hook Heurístico
-            # Pega a primeira frase ou as primeiras 8 palavras
+            # 6. Bonus para cortes na faixa "ideal" de duração
+            # (para cortes longos, faixas maiores também ganham bonus)
+            if self.min_duration <= actual_duration <= self.max_duration:
+                score += 5
+
+            # 7. Gerador de Título/Hook Heurístico
             hook_candidate = segs[0].text.strip()
             if len(hook_candidate.split()) > 10:
                 hook_candidate = " ".join(hook_candidate.split()[:10]) + "..."
@@ -422,32 +526,61 @@ class HeuristicAnalyzer:
                 summary=text[:100] + "...",
                 motivo=f"Padrão heurístico (WPS: {wps:.1f}, Energy: {energy_hits})"
             ))
-            
+
         logger.info(f"Análise heurística gerou {len(cuts)} candidatos potenciais.")
         return cuts
 
+    @staticmethod
+    def _frange(start: float, stop: float, step: float):
+        """range() com suporte a float."""
+        current = start
+        while current < stop:
+            yield current
+            current += step
 
-def calculate_python_score(cut: ViralCut, transcript_segments: list) -> float:
+
+def calculate_python_score(
+    cut: ViralCut,
+    transcript_segments: list,
+    min_duration: float = 20.0,
+    max_duration: float = 300.0,
+) -> float:
     """
     Calcula uma pontuação adicional em Python baseada em heurísticas objetivas.
     Complementa o viral_score do LLM.
 
+    CORREÇÃO: A penalidade de duração antes era hardcoded para 20–65s.
+    Agora recebe min_duration e max_duration como parâmetros para refletir
+    a configuração real do pipeline.
+
     Args:
         cut: O corte viral a avaliar
         transcript_segments: Segmentos da transcrição no intervalo do corte
+        min_duration: Duração mínima configurada (default: 20.0)
+        max_duration: Duração máxima configurada (default: 300.0)
 
     Returns:
         Pontuação Python de 0 a 100
     """
     score = 50.0  # base
 
-    # 1. Duração ideal (30-45s = ótimo para redes sociais)
     duration = cut.duration
-    if 30 <= duration <= 45:
+
+    # 1. Duração ideal
+    # O "sweet spot" é a faixa central entre min e max configurados.
+    # Faixa ótima: 30–45% da duração máxima (ex: max=300 → ótimo=90–135s)
+    # Faixa boa:   20–65% da duração máxima
+    # Faixa ok:    min até max (dentro do range aceito)
+    sweet_low = max_duration * 0.30
+    sweet_high = max_duration * 0.45
+    good_low = max_duration * 0.20
+    good_high = max_duration * 0.65
+
+    if sweet_low <= duration <= sweet_high:
         score += 15
-    elif 25 <= duration <= 55:
+    elif good_low <= duration <= good_high:
         score += 8
-    elif 20 <= duration <= 60:
+    elif min_duration <= duration <= max_duration:
         score += 3
 
     # 2. Análise do texto transcrito no intervalo
@@ -480,8 +613,10 @@ def calculate_python_score(cut: ViralCut, transcript_segments: list) -> float:
     if any(w in text for w in question_words):
         score += 5
 
-    # 5. Penalidade para cortes muito curtos ou muito longos
-    if duration < 20 or duration > 65:
+    # 5. CORREÇÃO: Penalidade para cortes fora dos limites configurados
+    # Antes: "if duration < 20 or duration > 65" (completamente fixo)
+    # Agora: usa os parâmetros reais do pipeline
+    if duration < min_duration or duration > max_duration:
         score -= 15
 
     # 6. Hook forte (campo hook preenchido e substancial)
@@ -497,10 +632,14 @@ def rank_and_filter_cuts(
     top_n: int = 10,
     min_score: float = 40.0,
     min_duration: float = 20.0,
-    max_duration: float = 65.0,
+    max_duration: float = 300.0,   # PADRÃO ATUALIZADO: era 65.0
 ) -> list[ViralCut]:
     """
     Ranqueia e filtra os melhores cortes virais.
+
+    Nota: Esta função já recebia min_duration e max_duration do config externo.
+    O padrão do parâmetro max_duration foi atualizado de 65.0 para 300.0 para
+    refletir o novo comportamento padrão. O valor real sempre vem de args.max_duration.
 
     Args:
         cuts: Lista de todos os cortes encontrados
@@ -513,11 +652,20 @@ def rank_and_filter_cuts(
     Returns:
         Lista ranqueada dos melhores cortes
     """
-    logger.info(f"Ranqueando {len(cuts)} cortes...")
+    logger.info(
+        f"Ranqueando {len(cuts)} cortes | "
+        f"duração={min_duration:.0f}s–{max_duration:.0f}s | "
+        f"score_mín={min_score}"
+    )
 
     # Calcula python_score e final_score para cada corte
+    # CORREÇÃO: passa min_duration e max_duration para calculate_python_score
     for cut in cuts:
-        cut.python_score = calculate_python_score(cut, transcript_segments)
+        cut.python_score = calculate_python_score(
+            cut, transcript_segments,
+            min_duration=min_duration,
+            max_duration=max_duration,
+        )
         # Score final: 70% LLM + 30% Python
         cut.final_score = (cut.viral_score * 0.70) + (cut.python_score * 0.30)
 
@@ -527,7 +675,25 @@ def rank_and_filter_cuts(
         if c.final_score >= min_score
         and min_duration <= c.duration <= max_duration
     ]
-    logger.info(f"{len(filtered)} cortes após filtros (score >= {min_score}, duração {min_duration}-{max_duration}s)")
+    logger.info(
+        f"{len(filtered)} cortes após filtros "
+        f"(score >= {min_score}, duração {min_duration:.0f}s–{max_duration:.0f}s)"
+    )
+
+    # Fallback inteligente se nenhum corte passar pelos filtros estritos
+    if not filtered and cuts:
+        fallback_min_score = min(30.0, min_score)
+        logger.warning(
+            f"⚠️ Nenhum corte passou pelos filtros. "
+            f"Aplicando fallback (score >= {fallback_min_score}, "
+            f"duração {min_duration:.0f}s–{max_duration:.0f}s)..."
+        )
+        filtered = [
+            c for c in cuts
+            if c.final_score >= fallback_min_score
+            and min_duration <= c.duration <= max_duration
+        ]
+        logger.info(f"{len(filtered)} cortes obtidos via fallback.")
 
     # Ordena por final_score descendente
     filtered.sort(key=lambda c: c.final_score, reverse=True)

@@ -28,28 +28,22 @@ class BatchProcessor:
         self.playwright_uploader = None
         
         # Agendamento
-        self.schedule_interval = 0 # em horas
+        self.schedule_interval = 0
         self.last_scheduled_time = None
         
         if upload_to_youtube:
-            # Tenta inicializar Playwright se solicitado (fallback ou principal)
             if custom_args and custom_args.get("use_playwright"):
                 try:
-                    # Pega o nome do perfil selecionado para usar a sessão correta
                     profile_index = custom_args.get("youtube_profile_index", 0)
                     profile_name = "default"
-                    
-                    # Precisamos carregar o nome do perfil do YouTubeUploader para o Playwright
                     temp_uploader = YouTubeUploader()
                     if profile_index < len(temp_uploader.profiles):
                         profile_name = temp_uploader.profiles[profile_index]["name"]
-                    
                     self.playwright_uploader = PlaywrightUploader(profile_name=profile_name)
                     logger.info(f"Uploader Playwright inicializado para o perfil: {profile_name}")
                 except Exception as e:
                     logger.error(f"Falha ao inicializar Playwright: {e}")
 
-            # Tenta inicializar API Uploader
             try:
                 self.uploader = YouTubeUploader()
             except Exception as e:
@@ -81,7 +75,6 @@ class BatchProcessor:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#'):
-                    # Pega apenas a parte antes do comentário #
                     url = line.split('#')[0].strip()
                     if url:
                         urls.append(url)
@@ -94,34 +87,49 @@ class BatchProcessor:
         total = len(jobs)
         logger.info(f"Iniciando processamento de fila customizada com {total} vídeos.")
 
-        # Inicializa o tempo de agendamento apenas no início do lote
         self.schedule_interval = custom_args.get("schedule_interval", 0) if custom_args else 0
         
-        # Define o perfil inicial do YouTube se o upload estiver ativado
         if self.upload_to_youtube and self.uploader:
             initial_profile = custom_args.get("youtube_profile_index", 0) if custom_args else 0
             if initial_profile < len(self.uploader.profiles):
                 self.uploader.authenticate(initial_profile)
 
         if self.schedule_interval > 0:
-            # YouTube API exige horário em UTC
             self.last_scheduled_time = datetime.now(timezone.utc)
             logger.info(f"Agendamento ativado (UTC): intervalo de {self.schedule_interval}h entre vídeos.")
 
         for i, job in enumerate(jobs, 1):
             url = job.get("url")
-            if not url: continue
+            if not url:
+                continue
             
             if url in self.progress["completed_urls"]:
                 logger.info(f"[{i}/{total}] Pulando URL já concluída: {url}")
                 continue
 
-            logger.info(f"[{i}/{total}] Processando: {url} (Formato: {job.get('preset')})")
+            # ── FIX: Preset por job tem prioridade sobre o global ──────────────
+            # O frontend pode mandar o campo como "preset" ou "preset_id".
+            # Se nenhum dos dois estiver definido no job, usa o preset global
+            # (custom_args["preset"]). Se o global também não existir, usa
+            # "landscape" como fallback seguro (evita auto_detect forçar shorts).
+            job_preset = job.get("preset") or job.get("preset_id")
+            global_preset = (custom_args or {}).get("preset", "landscape")
+            effective_preset = job_preset if job_preset else global_preset
+
+            logger.info(
+                f"[{i}/{total}] Processando: {url} | "
+                f"Preset: {effective_preset} "
+                f"({'job' if job_preset else 'global'})"
+            )
+
             try:
-                # Mescla os argumentos globais com os específicos do job
+                # Mescla: args globais primeiro, job sobrescreve campos específicos.
+                # Depois força "preset" com o valor resolvido acima para garantir
+                # que auto_detect do global não sobrescreva o preset individual.
                 job_args = dict(custom_args) if custom_args else {}
                 job_args.update(job)
-                
+                job_args["preset"] = effective_preset  # ← sempre o valor resolvido
+
                 self.process_single_url(url, job_args)
                 self.progress["completed_urls"].append(url)
                 logger.info(f"[{i}/{total}] Sucesso: {url}")
@@ -137,14 +145,12 @@ class BatchProcessor:
         video_path = download_youtube_video(url, str(video_dir))
         
         # 2. Setup Args for Pipeline
-        # Usamos o DEFAULT_CONFIG como base e sobrescrevemos o necessário
         class ArgsNamespace:
             def __init__(self, **kwargs):
                 self.__dict__.update(kwargs)
             def __getattr__(self, name):
                 return DEFAULT_CONFIG.get(name)
 
-        # Nome da pasta de saída baseado no nome do arquivo do vídeo
         video_name = Path(video_path).stem
         current_output = ensure_dir(os.path.join(self.output_base_dir, "results", video_name))
         
@@ -155,7 +161,7 @@ class BatchProcessor:
         pipeline_args = ArgsNamespace(**args_dict)
 
         # 3. Run Pipeline
-        logger.info(f"Iniciando pipeline de corte para: {video_name}")
+        logger.info(f"Iniciando pipeline de corte para: {video_name} | Preset: {args_dict.get('preset')}")
         run_pipeline(pipeline_args)
 
         # 4. Upload to YouTube
@@ -171,7 +177,6 @@ class BatchProcessor:
         with open(report_path, 'r', encoding='utf-8') as f:
             report = json.load(f)
 
-        # Cria um mapa de hooks para fácil acesso
         hook_map = {c.get("start"): c.get("hook") for c in report.get("cuts", [])}
 
         for cut in report.get("exported_files", []):
@@ -180,13 +185,10 @@ class BatchProcessor:
                 if not os.path.isabs(file_path):
                     file_path = os.path.join(output_dir, file_path)
                 
-                # Tenta pegar o hook da IA, se não tiver ou for genérico, usa o título original
                 hook = hook_map.get(cut.get("start"))
                 title_prefix = custom_args.get("title_prefix", "") if custom_args else ""
                 
-                # Lista de hooks genéricos a evitar como título principal
                 generic_hooks = ["Trecho selecionado via análise heurística", "Trecho interessante", "Corte"]
-                
                 is_valid_hook = hook and hook.strip() and hook not in generic_hooks
                 
                 if is_valid_hook:
@@ -196,22 +198,12 @@ class BatchProcessor:
                 
                 description = f"{hook if hook else ''}"
                 
-                # Lógica de Agendamento
                 publish_at = None
                 if self.schedule_interval > 0:
-                    # Incrementa o tempo ANTES de cada vídeo para garantir que o primeiro também seja agendado no futuro
                     self.last_scheduled_time += timedelta(hours=self.schedule_interval)
                     publish_at = self.last_scheduled_time.strftime("%Y-%m-%dT%H:%M:%SZ")
                     logger.info(f"Agendando vídeo '{title}' para: {publish_at}")
 
-                # 🚀 Geração de Título Dinâmico (IA/Heurística)
-                # Se o job não tem um título prefixo, tentamos gerar um baseado no original do YouTube
-                original_title = job.get("title", "")
-                if not original_title and url:
-                    # Tenta inferir algo da URL ou usa um padrão
-                    original_title = "Vídeo Viral"
-                
-                # Heurística para título de Shorts (Curto, Impactante, com Hashtags)
                 clean_title = original_title.split("|")[0].split("-")[0].strip()
                 dynamic_title = f"{clean_title} #shorts #viral #curiosidades"
                 if len(dynamic_title) > 100:
@@ -219,7 +211,6 @@ class BatchProcessor:
                 
                 final_title = dynamic_title
 
-                # Prioriza Playwright se estiver ativo
                 if custom_args and custom_args.get("use_playwright") and self.playwright_uploader:
                     try:
                         success = self.playwright_uploader.upload_video(
@@ -230,35 +221,34 @@ class BatchProcessor:
                         )
                         if success:
                             logger.info(f"Upload via Playwright concluído: {final_title}")
-                            continue # Pula o upload via API
+                            continue
                     except Exception as e:
                         logger.error(f"Erro no upload via Playwright do corte {cut['cut_index']}: {e}")
                  
-                # Fallback ou Principal: API
                 if self.uploader:
                     try:
                         video_id = self.uploader.upload_video(
                             file_path=file_path,
                             title=final_title,
                             description=description,
-                            privacy_status="public", # Agora os vídeos sobem direto como Públicos
+                            privacy_status="public",
                             publish_at=publish_at
                         )
                         cut["youtube_id"] = video_id
                     except Exception as e:
                         logger.error(f"Erro no upload do corte {cut['cut_index']}: {e}")
 
-        # Atualiza o relatório com os IDs do YouTube
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
 
     def process_all(self, custom_args=None):
         """
-        Processa todas as URLs do arquivo list.txt
+        Processa todas as URLs do arquivo list.txt (sem preset individual por job).
         """
         urls = self.get_urls()
         jobs = [{"url": url} for url in urls]
         self.process_jobs(jobs, custom_args)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Batch Processor para Viral Cutter")
@@ -271,7 +261,7 @@ def main():
 
     custom_pipeline_args = {
         "preset": args.preset,
-        "top_n": 5, # Exemplo: 5 cortes por vídeo
+        "top_n": 5,
     }
 
     processor = BatchProcessor(

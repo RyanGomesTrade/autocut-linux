@@ -88,7 +88,9 @@ DEFAULT_CONFIG = {
     "top_n": 10,
     "min_score": 40.0,
     "min_duration": 20.0,
-    "max_duration": 65.0,
+    "max_duration": 300.0,
+    "block_duration": 360.0,
+    "block_overlap": 30.0,
     "preset": "auto_detect",
     "no_subtitles": False,
     "soft_subtitles": False,
@@ -190,9 +192,13 @@ def async_pipeline_worker(cfg_dict):
         progress_data["results"] = []
         log_queue.put("⚙️ Iniciando processamento do vídeo único...")
 
+        # Garante que block_duration / block_overlap existam no dict
+        cfg_dict.setdefault("block_duration", 360.0)
+        cfg_dict.setdefault("block_overlap", 30.0)
+
         # Converte dicionário para Namespace
         args = SimpleNamespace(**cfg_dict)
-        
+
         # Roda pipeline principal
         exit_code = run_pipeline(args)
         
@@ -274,37 +280,55 @@ def run_single_upload(cfg_dict, results):
                     log_queue.put("✅ Upload concluído via API!")
                 except Exception as ex:
                     log_queue.put(f"❌ Falha no upload API: {ex}")
-
-def async_batch_worker(cfg_dict):
+def async_batch_worker(cfg_dict, jobs=None):
+    """
+    Worker de lote. Aceita lista de jobs com preset individual por job.
+    Se jobs=None ou vazio, lê URLs do list.txt (modo legado).
+    """
     global is_running, progress_data
     try:
         progress_data["active_task"] = "batch"
         progress_data["percent"] = 5
         progress_data["status"] = "Processando fila em lote..."
         log_queue.put("⚙️ Iniciando processamento em lote...")
-
-        list_file = cfg_dict.get("batch_list", "list.txt")
+ 
+        list_file  = cfg_dict.get("batch_list", "list.txt")
         output_dir = cfg_dict.get("output", "batch_output")
-        upload = cfg_dict.get("upload_youtube", False)
-
-        # Remove campos irrelevantes para o BatchProcessor
+        upload     = cfg_dict.get("upload_youtube", False)
+ 
         custom_args = cfg_dict.copy()
-        if "batch_list" in custom_args: del custom_args["batch_list"]
-        if "input" in custom_args: del custom_args["input"]
-
+        # Remove chaves que o BatchProcessor não precisa no custom_args
+        for key in ("batch_list", "input"):
+            custom_args.pop(key, None)
+ 
         processor = BatchProcessor(
             list_file=list_file,
             output_base_dir=output_dir,
             upload_to_youtube=upload,
             custom_args=custom_args
         )
-
-        processor.process_all(custom_args)
-
+ 
+        if jobs:
+            # ── Modo Web: jobs com preset individual ──────────────────────────
+            # Normaliza o campo de preset: frontend manda "preset", batch_processor
+            # também aceita "preset_id". Garante consistência.
+            normalized_jobs = []
+            for job in jobs:
+                j = dict(job)
+                # "preset" já é o nome correto — apenas garantimos que está presente
+                if not j.get("preset") and j.get("preset_id"):
+                    j["preset"] = j["preset_id"]
+                normalized_jobs.append(j)
+ 
+            processor.process_jobs(normalized_jobs, custom_args)
+        else:
+            # ── Modo legado: lê do list.txt ───────────────────────────────────
+            processor.process_all(custom_args)
+ 
         progress_data["percent"] = 100
         progress_data["status"] = "Processamento em lote concluído!"
         log_queue.put("🎉 Processamento em lote concluído com sucesso!")
-        
+ 
     except Exception as e:
         log_queue.put(f"❌ Erro fatal no lote: {e}")
         progress_data["status"] = f"Erro fatal no lote: {e}"
@@ -326,7 +350,6 @@ def api_config():
             return jsonify({"status": "success", "message": "Configurações salvas!"})
         return jsonify({"status": "error", "message": "Falha ao salvar."}), 500
     return jsonify(load_config())
-
 @app.route("/api/start", methods=["POST"])
 def api_start():
     global active_thread, is_running
@@ -335,9 +358,9 @@ def api_start():
             return jsonify({"status": "error", "message": "Já existe uma tarefa ativa rodando."}), 400
         
         req_data = request.json or {}
-        task_type = req_data.get("task_type", "pipeline") # pipeline, download, batch
+        task_type = req_data.get("task_type", "pipeline")
         cfg = load_config()
-
+ 
         is_running = True
         
         if task_type == "download":
@@ -346,13 +369,32 @@ def api_start():
                 is_running = False
                 return jsonify({"status": "error", "message": "URL do YouTube vazia."}), 400
             active_thread = threading.Thread(target=async_download_worker, args=(url, cfg["output"]))
+ 
         elif task_type == "batch":
-            active_thread = threading.Thread(target=async_batch_worker, args=(cfg,))
+            # ── FIX: pega jobs individuais (com preset por job) do payload ──
+            jobs_from_request = req_data.get("jobs", [])
+ 
+            # Mescla overrides do frontend no cfg (upload, playwright, profile, schedule)
+            cfg["upload_youtube"]        = req_data.get("upload_youtube",        cfg.get("upload_youtube", False))
+            cfg["use_playwright"]        = req_data.get("use_playwright",        cfg.get("use_playwright", False))
+            cfg["youtube_profile_index"] = req_data.get("youtube_profile_index", cfg.get("youtube_profile_index", 0))
+            cfg["schedule_interval"]     = req_data.get("schedule_hrs", 0)
+ 
+            # Preset padrão do painel batch (fallback quando o job não tem preset)
+            batch_default_preset = req_data.get("default_preset", cfg.get("preset", "landscape"))
+            cfg["preset"] = batch_default_preset
+ 
+            active_thread = threading.Thread(
+                target=async_batch_worker,
+                args=(cfg, jobs_from_request)   # ← jobs passados separadamente
+            )
+ 
         else:
             active_thread = threading.Thread(target=async_pipeline_worker, args=(cfg,))
-
+ 
         active_thread.start()
         return jsonify({"status": "success", "message": f"Tarefa '{task_type}' iniciada!"})
+ 
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():

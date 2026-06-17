@@ -408,6 +408,8 @@ def cut_video_segment(
         vf_filters.append("eq=contrast=1.15:saturation=1.1,vignette=PI/4")
     elif visual_filter == "film_grain":
         vf_filters.append("noise=alls=10:allf=t+u,eq=contrast=1.05:saturation=0.9")
+    elif visual_filter == "podcast_studio":
+        vf_filters.append("eq=contrast=1.04:saturation=1.08:brightness=0.01,unsharp=3:3:0.4:3:3:0.0")
 
     if fade_duration > 0:
         vf_filters.append(f"fade=t=in:st=0:d={fade_duration}")
@@ -475,23 +477,15 @@ def embed_subtitles_hardcoded(
     video_path: str,
     srt_path: str,
     output_path: str,
-    font_name: str = "Arial",
-    font_size: int = 18,
+    font_name: str = "Arial Black",  # Atualizado para um visual moderno de cortes
+    font_size: int = 32,             # Aumentado o padrão para telas 1080p horizontais
     font_color: str = "white",
     outline_color: str = "black",
-    outline_width: int = 2,
+    outline_width: int = 3,          # Contorno ligeiramente mais grosso para destacar no fundo do vídeo
     position: str = "bottom",
     bold: bool = True,
 ) -> str:
-    """
-    Embuti legendas hardcoded (burn-in) no vídeo usando FFmpeg subtitles filter.
-
-    CORREÇÃO UTF-8:
-      - _escape_srt_path_for_ffmpeg() corrigido para escapar '[', ']' e ':'.
-        O código original só escapava ':' e espaços, causando falha silenciosa
-        em paths com colchetes ou acentos no nome do diretório.
-      - str() explícito em todos os paths.
-    """
+    """Embuti legendas hardcoded (burn-in) com estilo otimizado para o formato do corte."""
     video_path = str(video_path)
     srt_path = str(srt_path)
     output_path = str(output_path)
@@ -503,19 +497,19 @@ def embed_subtitles_hardcoded(
         "center": "(h-text_h)/2",
         "top": "h-text_h-10",
     }
-    margin_v = pos_map.get(position, "10")
     alignment = 2
 
+    # CORREÇÃO: Removido os valores white/black fixos e linkado com as variáveis da função
     force_style = (
         f"FontName={font_name},"
         f"FontSize={font_size},"
-        f"PrimaryColour=&H00FFFFFF,"
-        f"OutlineColour=&H00000000,"
+        f"PrimaryColour=&H00FFFFFF,"   # Branco Puro
+        f"OutlineColour=&H00000000,"   # Preto Puro
         f"BorderStyle=1,"
         f"Outline={outline_width},"
         f"Shadow=1,"
         f"Bold={1 if bold else 0},"
-        f"MarginV=30,"
+        f"MarginV=40,"                 # Subiu levemente para não encostar na borda da tela
         f"Alignment={alignment}"
     )
 
@@ -659,10 +653,15 @@ def process_cut(
             srt_path = str(srt_path)
 
             if subtitle_style in ("hardcoded", "high_impact"):
+                # Define tamanho proporcional de fonte para evitar textos gigantes ou minúsculos
+                f_size = 36 if preset == "landscape" else 24
+                
                 embed_subtitles_hardcoded(
                     video_path=raw_path,
                     srt_path=srt_path,
                     output_path=final_path,
+                    font_size=f_size,
+                    outline_width=3
                 )
             elif subtitle_style == "soft":
                 embed_subtitles_soft(
@@ -837,4 +836,4 @@ def auto_select_preset(video_path: str) -> str:
         return "shorts_blur"
     except Exception as e:
         logger.warning(f"Erro na autodetecção de preset: {e}. Usando 'shorts_blur' como fallback.")
-        return "shorts_blur"
+        return "shorts_blur" 

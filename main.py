@@ -43,14 +43,14 @@ DEFAULT_CONFIG = {
     "ollama_model": "llama3",            # modelo do Ollama instalado
     "ollama_host": "http://localhost:11434",
     "ollama_timeout": 300,               # segundos por requisição
-    "block_duration": 360.0,            # 6 minutos por bloco de análise
-    "block_overlap": 30.0,              # 30s de sobreposição entre blocos
+    "block_duration": 360.0,             # 6 minutos por bloco de análise
+    "block_overlap": 30.0,               # 30s de sobreposição entre blocos
 
     # Seleção de cortes
     "top_n": 10,                         # número de cortes finais
     "min_viral_score": 40.0,             # score mínimo para incluir corte
-    "min_duration": 20.0,               # duração mínima do corte (s)
-    "max_duration": 65.0,               # duração máxima do corte (s)
+    "min_duration": 20.0,                # duração mínima do corte (s)
+    "max_duration": 600.0,               # duração máxima do corte (s)
 
     # Exportação
     "preset": "landscape",               # landscape, tiktok, reels, shorts, square
@@ -149,6 +149,18 @@ Presets de exportação disponíveis:
         "--ollama-host",
         default=DEFAULT_CONFIG["ollama_host"],
         help=f"URL do Ollama (padrão: {DEFAULT_CONFIG['ollama_host']})"
+    )
+    analysis_group.add_argument(
+        "--block-duration",
+        type=float,
+        default=DEFAULT_CONFIG["block_duration"],
+        help=f"Duração dos blocos de análise em segundos (padrão: {DEFAULT_CONFIG['block_duration']})"
+    )
+    analysis_group.add_argument(
+        "--block-overlap",
+        type=float,
+        default=DEFAULT_CONFIG["block_overlap"],
+        help=f"Sobreposição entre blocos em segundos (padrão: {DEFAULT_CONFIG['block_overlap']})"
     )
 
     # Configurações de seleção
@@ -484,12 +496,10 @@ def run_pipeline(args: argparse.Namespace) -> int:
     else:
         logger.info("\n⬛ ETAPA 2/6: Extraindo áudio...")
         try:
-            # FIX: Usa um arquivo temporário no diretório padrão do sistema (/tmp)
-            # para evitar problemas de encoding no caminho do arquivo de áudio.
             import tempfile
             fd, audio_path = tempfile.mkstemp(suffix=".wav", prefix="viral_cutter_audio_")
             os.close(fd)
-            
+
             extract_audio(args.input, audio_path)
             audio_size = os.path.getsize(audio_path)
             logger.info(f"  Áudio extraído: {format_size(audio_size)}")
@@ -565,26 +575,55 @@ def run_pipeline(args: argparse.Namespace) -> int:
         logger.info(f"\n⬛ ETAPA 4/6: Analisando com Ollama ({args.model})...")
         logger.info("  (Este passo pode ser lento dependendo do modelo e hardware)")
 
+        # ── CORREÇÃO: block_duration agora usa o valor configurado ──────────
+        # Antes: hardcoded block_duration=60.0, overlap=15.0
+        # Agora: lê de args (propagados de DEFAULT_CONFIG ou CLI)
+        block_duration = getattr(args, "block_duration", DEFAULT_CONFIG["block_duration"])
+        block_overlap = getattr(args, "block_overlap", DEFAULT_CONFIG["block_overlap"])
+
+        # Garante que o bloco seja grande o suficiente para acomodar max_duration
+        # O bloco precisa ser pelo menos max_duration + margem para que o LLM
+        # consiga gerar cortes na duração desejada.
+        min_block = args.max_duration + 60
+        if block_duration < min_block:
+            logger.warning(
+                f"⚠️ block_duration ({block_duration:.0f}s) é menor que "
+                f"max_duration + margem ({min_block:.0f}s). "
+                f"Ajustando automaticamente para {min_block:.0f}s."
+            )
+            block_duration = min_block
+
         blocks = split_transcript_into_blocks(
             transcript,
-            block_duration=60.0,
-            overlap=15.0,
+            block_duration=block_duration,
+            overlap=block_overlap,
         )
-        logger.info(f"  Transcrição dividida em {len(blocks)} blocos para análise")
+        logger.info(
+            f"  Transcrição dividida em {len(blocks)} blocos para análise "
+            f"(bloco={block_duration:.0f}s, sobreposição={block_overlap:.0f}s)"
+        )
 
         # Escolha do motor de análise
         engine = getattr(args, 'analysis_engine', 'ollama')
-        
+
         try:
             if engine == "heuristic":
                 from analyzer import HeuristicAnalyzer
-                analyzer = HeuristicAnalyzer(top_n=args.top_n)
+                # ── CORREÇÃO: propaga min_duration / max_duration ───────────
+                analyzer = HeuristicAnalyzer(
+                    top_n=args.top_n,
+                    min_duration=args.min_duration,
+                    max_duration=args.max_duration,
+                )
                 all_cuts = analyzer.analyze(transcript.segments)
             else:
+                # ── CORREÇÃO: propaga min_duration / max_duration ───────────
                 analyzer = OllamaAnalyzer(
                     model=args.model,
                     host=args.ollama_host,
                     timeout=args.ollama_timeout,
+                    min_duration=args.min_duration,
+                    max_duration=args.max_duration,
                 )
                 all_cuts = analyzer.analyze_all_blocks(blocks)
         except Exception as e:
@@ -673,6 +712,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                         cut_end=cut_end,
                         all_segments=transcript.segments,
                         output_path=srt_path,
+                        preset=selected_preset,
                     )
                 else:
                     srt_filename = f"cut_{i:02d}_{int(cut_start)}s.srt"

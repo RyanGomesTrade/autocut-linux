@@ -134,6 +134,27 @@ def evaluate_video(youtube, video_id, snippet):
         duration_sec = parse_yt_duration(item["contentDetails"].get("duration", "PT0S"))
         channel_id = item["snippet"]["channelId"]
         channel_name = item["snippet"]["channelTitle"]
+
+        # --- Filtro de Palavras-Chave e Duração Mínima ---
+        # 1. Rejeita vídeos com menos de 30 minutos (1800s) para evitar cortes de terceiros
+        if duration_sec < 1800:
+            decision_trace.append("rejected_too_short")
+            logger.info(f"⏭️ Vídeo muito curto ({duration_sec}s). Rejeitado por ser provavelmente um corte.")
+            return None
+
+        # 2. Rejeita vídeos que contenham palavras-chave de corte no título ou nome do canal
+        reject_kws = [
+            "cortes", "corte", "melhores momentos", "compilação", "compilado", 
+            "clips", "clipes", "clip do", "highlights", "highlight", "shorts", 
+            "reels", "teaser", "trailer", "react", "reagindo", "trecho", "trechos", 
+            "compilation", "best moments", "preview", "recap"
+        ]
+        title_lower = item["snippet"]["title"].lower()
+        channel_lower = channel_name.lower()
+        if any(kw in title_lower for kw in reject_kws) or any(kw in channel_lower for kw in reject_kws):
+            decision_trace.append("rejected_by_keywords")
+            logger.info(f"⏭️ Vídeo rejeitado por conter palavra-chave de corte no título ou canal: '{item['snippet']['title']}' | Canal: '{channel_name}'")
+            return None
         
         vph = calculate_vph(view_count, published_at)
         avg_vph = database.get_channel_avg_vph(channel_id)
@@ -328,13 +349,13 @@ def run_discovery(youtube, nicho=None, channel_ids=None):
         default_channels = [
             {"id": "UCm0WfH2M2O_S6P8PzYwXp7g", "name": "Podpah"},
             {"id": "UC6o_9U9uFmS9P9X6X6X6X6A", "name": "Flow Podcast"},
-            {"id": "UCU4I9rW8I3z3a5x3x3x3x3x", "name": "Cortes do Flow"} 
+            {"id": "UCc209K8_1aW85LDR8e1LgPA", "name": "Venus Podcast"} 
         ]
         logger.info("📡 Varrendo vídeos em alta por nicho (Trending Fallback)...")
-        # Se canais derem zero, tenta uma busca geral por "podcast cortes"
+        # Se canais derem zero, tenta uma busca geral por "podcast completo brasil"
         request = youtube.search().list(
             part="snippet",
-            q="podcast cortes brasil",
+            q="podcast completo brasil",
             maxResults=10,
             order="date",
             type="video"
